@@ -1,0 +1,4 @@
+[submodule "openwrt-mt6000.git"]
+	path = openwrt-mt6000.git
+	url = https://github.com/pesa1234/openwrt.git
+	branch = next-r4.6.4.rss.mtk
