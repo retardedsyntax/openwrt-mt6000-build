@@ -1,0 +1,90 @@
+# syntax=docker/dockerfile-upstream:master
+#################################################
+
+FROM ubuntu:22.04 AS base_image
+
+ARG DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-l", "-eo", "pipefail", "-c"]
+
+ENV TZ='Europe/Helsinki'
+ENV LANG='en_US.UTF-8'
+ENV LANGUAGE='en_US:en:C'
+ENV LC_ALL='C.UTF-8'
+
+# Initial setup, also setup locale and timezone
+RUN apt-get -y update && \
+    apt-get -y upgrade && \
+    apt-get install -y --no-install-recommends tzdata locales && \
+    sed -i -e 's/# C.UTF-8 UTF-8/C.UTF-8 UTF-8/' /etc/locale.gen && \
+    sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen &&\
+    dpkg-reconfigure --frontend=noninteractive locales && \
+    ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime && \
+    dpkg-reconfigure --frontend=noninteractive tzdata
+
+
+# Install basic tools
+RUN apt-get install -y --no-install-recommends \
+    net-tools file bzip2 unzip xz-utils tar zstd \
+    curl wget ca-certificates rsync \
+    git git-lfs gnupg2 \
+    nano jq pv && \
+    apt-get -y clean autoclean && \
+    apt-get -y autoremove --purge && \
+    rm -rf /var/lib/apt/lists/*
+
+FROM base_image AS buildbot_base
+SHELL ["/bin/bash", "-l", "-eo", "pipefail", "-c"]
+ARG DEBIAN_FRONTEND
+
+RUN apt-get update && \
+	apt-get install -y --no-install-recommends \
+		build-essential \
+		clang \
+		llvm \
+		ccache \
+		flex \
+		bison \
+		gawk \
+		g++ \
+		g++-multilib \
+		gcc-multilib \
+		gettext \
+		libdw-dev \
+		libelf-dev \
+		libncurses5-dev \
+		libssl-dev \
+		pwgen \
+		python3 \
+		python-is-python3 \
+		python3-dev \
+		python3-venv \
+		python3-pip \
+		python3-pyelftools \
+		python3-cryptography \
+		python3-distutils \
+		python3-setuptools \
+		qemu-utils \
+		signify-openbsd \
+		subversion \
+		swig \
+		xsltproc \
+		xxd \
+		zlib1g-dev && \
+		apt-get -y clean autoclean && \
+		apt-get -y autoremove --purge && \
+		rm -rf /var/lib/apt/lists/*
+
+FROM buildbot_base AS buildbot
+SHELL ["/bin/bash", "-l", "-eo", "pipefail", "-c"]
+ARG DEBIAN_FRONTEND
+
+ARG USERNAME=buildbot
+ARG USER_UID=1000
+ARG USER_GID=$USER_UID
+
+RUN groupadd --gid ${USER_GID} ${USERNAME} && \
+    useradd --uid ${USER_UID} --gid ${USER_GID} --no-create-home --no-user-group --shell "/bin/bash" ${USERNAME}
+
+ENV GCC_COLORS='error=01;31:warning=01;35:note=01;36:caret=01;32:locus=01:quote=01'
+WORKDIR /builder
+USER ${USERNAME}
