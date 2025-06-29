@@ -10,15 +10,23 @@
 set -exuo pipefail
 
 ###############################################################################
+## Environment setup
 
-# Apt is being run in a script
-: "${DEBIAN_FRONTEND:=noninteractive}"
-export DEBIAN_FRONTEND
+PROG="$0"
+SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+
+function apt_cleanup() {
+  apt-get clean autoclean
+  apt-get autoremove -y
+  rm -rf /var/lib/apt/lists/*
+}
+
+## APT is being run in a script
+export DEBIAN_FRONTEND=noninteractive
 
 APT_ARGS=(
     # "-o APT::AutoRemove::RecommendsImportant=false" # Autoremove recommended packages also
     "-o Dpkg::Options::=\"--force-confold\"" # Use old configuration automatically on conflict
-    "-o Acquire::ForceIPv4=true" # IPv6 causes issues sometimes with APT
     "--no-install-recommends" # Don't install recommended packages
 )
 
@@ -30,35 +38,20 @@ function aptget() { apt-get "${APT_ARGS[@]}" "$@"; }
 ## Step 1. Install packages
 
 apt_pkgs=(
-    curl
-    file
-    git
-    git-lfs
-    gnupg2
-    jq
-    nano 
-    net-tools
-    pv 
-    rsync
-    tar
-    genisoimage
-    signify-openbsd
-    unzip
-    subversion
     asciidoc
-    ccache
     bash
     binutils
-    qemu-utils
     bison
     build-essential
     bzip2
+    ccache
     flex
     g++
     g++-multilib
     gawk
     gcc
     gcc-multilib
+    genisoimage
     gettext
     gzip
     help2man 
@@ -70,6 +63,7 @@ apt_pkgs=(
     libssl-dev
     patch
     perl-modules 
+    pv
     pwgen
     python-is-python3
     python3
@@ -79,13 +73,16 @@ apt_pkgs=(
     python3-pyelftools
     python3-setuptools
     python3-venv
+    qemu-utils
+    signify-openbsd
+    subversion
     swig
-    wget
+    tar
+    unzip
     xsltproc
     xxd
     zlib1g-dev
     zstd
-    pv
 )
 
 aptget update
@@ -94,10 +91,8 @@ aptget install -y "${apt_pkgs[@]}"
 ###############################################################################
 
 ###############################################################################
-## Step 2. Cleanup
+## Step 2. Cleanup APT
 
-apt-get clean autoclean
-apt-get autoremove --yes
-rm -rf /var/lib/apt/lists/*
+apt_cleanup
 
 ###############################################################################
