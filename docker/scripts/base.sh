@@ -85,7 +85,7 @@ misc_pkgs=(
 
 ###############################################################################
 ## Step 1. Prepare APT and upgrade installed packages
-aptget update
+aptget update -y
 aptget install -y "${apt_prep_pkgs[@]}"
 aptget dist-upgrade -y
 
