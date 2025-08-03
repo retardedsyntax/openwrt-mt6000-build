@@ -1,25 +1,22 @@
 #!/usr/bin/env python3
 
 # -*- coding: utf-8 -*-
-import subprocess
 import getpass
-from datetime import datetime, timezone, timedelta
 import os
-from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, Iterable, Optional, cast
-from semver import Version
-from invoke.config import Config, DataProxy
+from typing import TYPE_CHECKING, Iterable, Optional
+
 from invoke.collection import Collection
-from invoke.tasks import task
+from invoke.config import Config
 from invoke.exceptions import Exit
-from invoke.runners import Result
+from invoke.tasks import task
+from semver import Version
 
 from task_utils import (
-    timedelta_to_dhms,
-    get_container_platform,
     get_container_image_id,
+    get_container_platform,
     get_image_age,
     parse_config_file,
+    timedelta_to_dhms,
 )
 
 if TYPE_CHECKING:
