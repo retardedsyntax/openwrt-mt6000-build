@@ -33,6 +33,7 @@ BUILDER_DOCKERFILE = "Dockerfile.builder"
 BUILDER_BASE_IMAGE_BASENAME = "imagebuilder-base"
 BUILDER_IMAGE_BASENAME = "openwrt-imagebuilder"
 BUILDER_WORKDIR = "/builder"
+BUILDER_WORKDIR_IMAGEBUILDER = "/builder/imagebuilder"
 BUILDER_USER = "buildbot"
 
 
@@ -165,6 +166,9 @@ def build_container(
         cmd_params.append(f"--build-arg BASE_IMAGE={BUILDER_BASE_IMAGE_BASENAME}")
         cmd_params.append(f"--build-arg BUILDER_URL={conf.imagebuilder_url}")
         cmd_params.append(f"--build-arg WORKDIR={BUILDER_WORKDIR}")
+        cmd_params.append(
+            f"--build-arg WORKDIR_IMAGEBUILDER={BUILDER_WORKDIR_IMAGEBUILDER}"
+        )
         cmd_params.append(f"--build-arg USER={BUILDER_USER}")
         cmd_params.append(f"--build-arg UID={os.getuid()}")
         cmd_params.append(f"--build-arg GID={os.getgid()}")
@@ -273,7 +277,7 @@ def shell(
 
     if params:
         cmd_params.append(*params)
-    cmd_params.append(f"{image_name}:latest {f"bash -c '{cmd}'" if cmd else 'bash'}")
+    cmd_params.append(f"{image_name}:latest {f'{cmd}' if cmd else 'bash'}")
 
     command = " ".join(cmd_params)
 
@@ -317,7 +321,7 @@ def build(
 
     # Build the image
     cmd_params = [
-        f"make -C {os.path.join(BUILDER_WORKDIR, 'imagebuilder')} image "
+        f"make -C {BUILDER_WORKDIR_IMAGEBUILDER} image "
         f"PROFILE={conf.profile} "
         f"PACKAGES='{' '.join(conf.packages)}' "
         f"DISABLED_SERVICES='{' '.join(conf.disabled_services)}' "
@@ -344,15 +348,34 @@ def info(
     config: str = "config.conf",
 ):
     """
-    Build the OpenWRT image.
+    Show imagebuilder info.
     """
-    command = f"make -C {os.path.join(BUILDER_WORKDIR, 'imagebuilder')} info"
+    command = f"make -C {BUILDER_WORKDIR_IMAGEBUILDER} info"
+    log.info(f"Shell command: {command}")
+    shell(ctx, config=config, cmd=command)
+
+
+@task(
+    pre=[check_platform],
+    optional=["config"],
+    help={
+        "config": "Name of the config file to use (default 'config.conf').",
+    },
+)
+def clean(
+    ctx: "Context",
+    config: str = "config.conf",
+):
+    """
+    Clean OpenWRT build.
+    """
+    command = f"make -C {BUILDER_WORKDIR_IMAGEBUILDER} clean"
     log.info(f"Shell command: {command}")
     shell(ctx, config=config, cmd=command)
 
 
 # Add all tasks to the namespace
-ns = Collection(check_platform, build_container, shell, build, info)
+ns = Collection(check_platform, build_container, shell, build, info, clean)
 # Configure every task to act as a shell command
 #   (will print colors, allow interactive CLI)
 # Add our extra configuration file for the project

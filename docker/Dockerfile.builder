@@ -11,6 +11,7 @@ FROM ${BASE_IMAGE} AS base
 ARG BUILDER_URL
 
 ARG WORKDIR=/builder
+ARG WORKDIR_IMAGEBUILDER=${WORKDIR}/imagebuilder
 ARG USER=buildbot
 ARG UID=1000
 ARG GID=1000
@@ -25,15 +26,15 @@ RUN groupadd --gid ${GID} ${USER} && \
       --shell "/bin/bash" ${USER}
 
 ## Create working directories
-RUN mkdir -pv ${WORKDIR}/imagebuilder \
-    && chown -vR ${UID}:${GID} ${WORKDIR}
+RUN mkdir -pv ${WORKDIR_IMAGEBUILDER} \
+    && chown -vR ${UID}:${GID} ${WORKDIR_IMAGEBUILDER}
 
 ## Download and setup imagebuilder
 RUN curl -fL "${BUILDER_URL}" -o /tmp/imagebuilder \
-    && tar -xvf /tmp/imagebuilder --strip-components=1 -C ${WORKDIR}/imagebuilder/ \
+    && tar -xvf /tmp/imagebuilder --strip-components=1 -C ${WORKDIR_IMAGEBUILDER}/ \
     && rm -f /tmp/imagebuilder
 
-WORKDIR ${WORKDIR}/imagebuilder
+WORKDIR ${WORKDIR_IMAGEBUILDER}
 USER ${USER}
 CMD ["/bin/bash"]
 
