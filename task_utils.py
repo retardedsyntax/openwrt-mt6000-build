@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-import subprocess
-import os
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Optional
-from configparser import ConfigParser
-from semver import Version
 import re
+import subprocess
+from datetime import timedelta
+from typing import TYPE_CHECKING, Optional
+
+import attrs
+from semver import VersionInfo, parse_version_info
 
 if TYPE_CHECKING:
     pass
@@ -18,6 +18,29 @@ def _subprocess_run_stdout(command: str) -> Optional[str]:
     return result.stdout.decode().rstrip()
 
 
+@attrs.define(frozen=True)
+class TargetConfig:
+    profile: str
+    release: VersionInfo
+    target: str
+    subtarget: str
+    packages: list[str] = attrs.field(converter=list)
+    disabled_services: list[str] = attrs.field(converter=list)
+
+    @property
+    def release_str(self) -> str:
+        return f"{self.release.major}.{self.release.minor}.{self.release.patch}"
+
+    @property
+    def imagebuilder_url(self) -> str:
+        if self.release.major >= 24:
+            ext = "zst"
+        else:
+            ext = "xz"
+
+        return f"https://downloads.openwrt.org/releases/{self.release_str}/targets/{self.target}/{self.subtarget}/openwrt-imagebuilder-{self.release_str}-{self.target}-{self.subtarget}.Linux-x86_64.tar.{ext}"
+
+
 def _strip_whitespace(value: str) -> str:
     value = value.strip()
 
@@ -27,7 +50,7 @@ def _strip_whitespace(value: str) -> str:
     return value
 
 
-def parse_config_file(cfgpath: str) -> dict[str, Any]:
+def parse_target_config(cfgpath: str) -> TargetConfig:
     cfg = {}
     pattern = re.compile(
         r"(?<!^#)(?P<key>[\w\d_\-]+)=[\'\"]?(?P<value>[\w\d\s_\-\.]*)[\'\"]?$"
@@ -45,30 +68,16 @@ def parse_config_file(cfgpath: str) -> dict[str, Any]:
     except FileNotFoundError:
         pass
 
-    return cfg
+    target = TargetConfig(
+        profile=cfg["OPENWRT_PROFILE"],
+        release=parse_version_info(cfg["OPENWRT_RELEASE"]),
+        target=cfg["OPENWRT_TARGET"],
+        subtarget=cfg["OPENWRT_SUBTARGET"],
+        packages=cfg["OPENWRT_PACKAGES"].split(),
+        disabled_services=cfg["OPENWRT_DISABLED_SERVICES"].split(),
+    )
 
-
-def parse_semver(version: str) -> Version:
-    return Version.parse(version)
-
-
-def read_config(rootdir: str, filename: str = "config.ini"):
-    cfg = ConfigParser()
-    try:
-        with open(os.path.join(rootdir, filename), "r") as cfgfile:
-            cfg.read_file(cfgfile)
-    except FileNotFoundError:
-        pass
-
-    print(f"config: {cfg}")
-    return cfg
-
-
-def write_config(section: str, key: str, value: str, fpath: str):
-    cfg = ConfigParser()
-    cfg[section] = dict(key=value)
-    with open(fpath, "w") as cfgfile:
-        cfg.write(cfgfile)
+    return target
 
 
 def timedelta_to_dhms(td: timedelta) -> tuple[int, int, int, float]:
@@ -86,80 +95,3 @@ def timedelta_to_dhms(td: timedelta) -> tuple[int, int, int, float]:
     seconds += td.microseconds / 1e6
 
     return (days, hours, minutes, seconds)
-
-
-def get_container_platform() -> Optional[str]:
-    """
-    Get current container platform engine, Docker or Podman.
-
-    :return: Container platform or `None` on failure.
-    :rtype: Optional[str]
-    """
-    result = _subprocess_run_stdout("docker --version")
-    if not result:
-        return None
-
-    if result.startswith("podman"):
-        platform = "podman"
-    else:
-        platform = "docker"
-
-    # print(f"Container platform: {platform}")
-    return platform
-
-
-def get_container_image_id(image_name: str) -> Optional[str]:
-    """
-    Get image ID for given container image.
-
-    :param image_name: Container image name.
-    :type image_name: str
-    :return: Container image ID or `None` on failure.
-    :rtype: Optional[str]
-    """
-    platform = get_container_platform()
-    if not platform:
-        return None
-
-    result = _subprocess_run_stdout(f"{platform} images -q {image_name}:latest")
-    if not result:
-        return None
-
-    print(f"Image ID for '{image_name}': {result}")
-    return result
-
-
-def get_image_age(image_id: str) -> Optional[timedelta]:
-    """
-    Get container image age.
-
-    :param image_id: Container image ID.
-    :type image_id: str
-    :return: Container image age as `datetime.timedelta` or `None` on failure.
-    :rtype: Optional[timedelta]
-    """
-    platform = get_container_platform()
-    if not platform:
-        return None
-
-    # Get created timestamp of the image
-    result = _subprocess_run_stdout(
-        f"{platform} inspect -f '{{{{ .Created }}}}' {image_id}"
-    )
-    if not result:
-        return None
-
-    # Hacky hack, remove part of the timestamp
-    # because `strptime` only understands 6 digits
-    # in the microsecond part.
-    #
-    # test = "2025-08-02 16:07:16.299542344 +0000 UTC"
-    # test = test[:26] + test[29:]
-    timestamp = result[:26] + result[29:]
-    imgdate = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f %z %Z")
-
-    return datetime.now(timezone.utc) - imgdate
-    # days, hours, minutes, seconds = _timedelta_dhms(
-    #    datetime.now(timezone.utc) - imgdate
-    # )
-    # print(f"Image created {days}d {hours}h {minutes}m {seconds}s ago")
