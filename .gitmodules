@@ -2,3 +2,7 @@
 	path = repos/openwrt-pesa1234.git
 	url = https://github.com/pesa1234/openwrt.git
 	branch = next-r4.6.4.rss.mtk
+[submodule "repos/lede-dockerbuilder.git"]
+	path = repos/lede-dockerbuilder.git
+	url = https://github.com/jandelgado/lede-dockerbuilder.git
+	branch = master
