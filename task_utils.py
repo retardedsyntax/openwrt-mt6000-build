@@ -10,6 +10,8 @@ from semver import VersionInfo, parse_version_info
 if TYPE_CHECKING:
     pass
 
+IB_BASE_URL = r"https://downloads.openwrt.org/releases/{}/targets/{}/{}/openwrt-imagebuilder-{}-{}-{}.Linux-x86_64.tar.{}"
+
 
 def _subprocess_run_stdout(command: str) -> Optional[str]:
     result = subprocess.run(command, shell=True, capture_output=True)
@@ -25,6 +27,7 @@ class TargetConfig:
     target: str
     subtarget: str
     packages: list[str] = attrs.field(converter=list)
+    # removed_packages: list[str] = attrs.field(converter=list)
     disabled_services: list[str] = attrs.field(converter=list)
 
     @property
@@ -38,46 +41,83 @@ class TargetConfig:
         else:
             ext = "xz"
 
-        return f"https://downloads.openwrt.org/releases/{self.release_str}/targets/{self.target}/{self.subtarget}/openwrt-imagebuilder-{self.release_str}-{self.target}-{self.subtarget}.Linux-x86_64.tar.{ext}"
+        url = IB_BASE_URL.format(
+            self.release_str,
+            self.target,
+            self.subtarget,
+            self.release_str,
+            self.target,
+            self.subtarget,
+            ext,
+        )
+        return url
+
+    def image_name(self, basename: str = "openwrt-imagebuilder") -> str:
+        return f"{basename}-{self.release_str}-{self.target}-{self.subtarget}"
 
 
-def _strip_whitespace(value: str) -> str:
+def strip_whitespace(value: str) -> str:
+    # First, remove leading and trailing whitespace.
     value = value.strip()
 
-    # Remove possible extra whitespace between strings
+    # Then, replace multiple whitespaces within the string
+    # with a single whitespace.
     value = re.sub(r"\s\s+", " ", value)
 
     return value
 
 
 def parse_target_config(cfgpath: str) -> TargetConfig:
-    cfg = {}
-    pattern = re.compile(
-        r"(?<!^#)(?P<key>[\w\d_\-]+)=[\'\"]?(?P<value>[\w\d\s_\-\.]*)[\'\"]?$"
-    )
+    config_dict = {}
 
     try:
         with open(cfgpath, "r") as f:
-            # Handle multiline strings
-            contents = f.read().replace("\\\n", "")
+            contents = f.read()
+
+            # (?=\r?\n|\r)
+            # re.sub(r"(?m)(^#.*[\r?\n|\r])", "", contents)
+            # ^[--]{1}.+(?=\r?\n|\r)
+
+            # Step 1. Remove comment lines starting with '#'
+            contents = re.sub(r"(?m)(^#.*[\r?\n|\r])", "", contents)
+
+            # Step 2. Remove comments at the end of lines.
+            contents = re.sub(r"(#.*)(?=\r?\n|\r)", "", contents)
+
+            # Step 3. Handle possible multiline strings which continue with '\' (Bash-style).
+            contents = re.sub(r"(\\[\r?\n|\r]\s+)", "", contents)
+
+            # Match key and value separated with '=' in named groups.
+            # r"(?P<key>[\w\d _\-\.]+)=(?:[\'\"])?(?P<value>[\w\d _\-\.]*)(?:[\'\"])?(?:\r?\n|\r)"
+            pattern = re.compile(
+                r"(?P<key>[\w\d _\-\.]+)=(?:[\'\"])?(?P<value>[\w\d _\-\.]*)(?:[\'\"])?"
+            )
             for line in contents.splitlines():
                 if match := pattern.match(line):
-                    cfg[_strip_whitespace(match["key"])] = _strip_whitespace(
-                        match["value"]
-                    )
+                    key = strip_whitespace(match["key"])
+                    value = strip_whitespace(match["value"])
+                    config_dict[key] = value
     except FileNotFoundError:
         pass
 
-    target = TargetConfig(
-        profile=cfg["OPENWRT_PROFILE"],
-        release=parse_version_info(cfg["OPENWRT_RELEASE"]),
-        target=cfg["OPENWRT_TARGET"],
-        subtarget=cfg["OPENWRT_SUBTARGET"],
-        packages=cfg["OPENWRT_PACKAGES"].split(),
-        disabled_services=cfg["OPENWRT_DISABLED_SERVICES"].split(),
-    )
+    # pkgs = []
+    # removed = []
+    ## Separate packages
+    # for pkg in config_dict.get("OPENWRT_PACKAGES", "").split():
+    #    if re.match(r"^[--]{1}.+", pkg):
+    #        pkg = re.sub(r"^[--]+", "", pkg)
+    #        removed.append(pkg)
+    #    else:
+    #        pkgs.append(pkg)
 
-    return target
+    return TargetConfig(
+        profile=config_dict.get("OPENWRT_PROFILE", ""),
+        release=parse_version_info(config_dict.get("OPENWRT_RELEASE", "")),
+        target=config_dict.get("OPENWRT_TARGET", ""),
+        subtarget=config_dict.get("OPENWRT_SUBTARGET", ""),
+        packages=config_dict.get("OPENWRT_PACKAGES", "").split(),
+        disabled_services=(config_dict.get("OPENWRT_DISABLED_SERVICES", "")).split(),
+    )
 
 
 def timedelta_to_dhms(td: timedelta) -> tuple[int, int, int, float]:

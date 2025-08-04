@@ -124,8 +124,22 @@ def check_platform(ctx: "Context") -> None:
         cfg.platform = platform
 
 
+@task(pre=[check_platform])
+def check_base_image(ctx: "Context") -> None:
+    """
+    Check if the imagebuilder base image exists, and rebuild if necessary.
+    """
+    plat = ctx.config.platform
+
+    image_name = BUILDER_BASE_IMAGE_BASENAME
+    container_details = get_container_details(ctx, plat, image_name)
+    if not container_details:
+        log.info(f"Base image '{image_name}' does not exist, building")
+        build_container(ctx, base=True, force=True)
+
+
 @task(
-    pre=[check_platform],
+    pre=[check_platform, check_base_image],
     iterable=["params"],
     optional=["dockerfile", "config", "max_age", "force", "params"],
     help={
@@ -154,35 +168,32 @@ def build_container(
     """
     plat = ctx.config.platform
 
-    cmd_params = [f"{plat} build", f"{'--no-cache' if force else ''}"]
-
     if base:
         image_name = BUILDER_BASE_IMAGE_BASENAME
-        cmd_params.append(f"--build-arg BASE_IMAGE={BASE_IMAGE}")
-        cmd_params.append(f"--tag {image_name}:latest")
-        cmd_params.append(
-            f"--file {BUILDER_BASE_DOCKERFILE if not dockerfile else dockerfile}"
+        command = (
+            f"{plat} build {'--no-cache ' if force else ''}"
+            f"--build-arg BASE_IMAGE={BASE_IMAGE} "
+            f"--tag {image_name}:latest "
+            f"--file {BUILDER_BASE_DOCKERFILE if not dockerfile else dockerfile} "
+            f"{' '.join(params) if params else ''}"
         )
     else:
         conf = parse_target_config(os.path.join(os.getcwd(), config))
-        image_name = f"{BUILDER_IMAGE_BASENAME}-{conf.release_str}-{conf.target}-{conf.subtarget}"
+        image_name = conf.image_name(BUILDER_IMAGE_BASENAME)
 
-        cmd_params.append(f"--build-arg BASE_IMAGE={BUILDER_BASE_IMAGE_BASENAME}")
-        cmd_params.append(f"--build-arg BUILDER_URL={conf.imagebuilder_url}")
-        cmd_params.append(f"--build-arg WORKDIR={BUILDER_WORKDIR}")
-        cmd_params.append(
-            f"--build-arg WORKDIR_IMAGEBUILDER={BUILDER_WORKDIR_IMAGEBUILDER}"
+        command = (
+            f"{plat} build {'--no-cache ' if force else ''}"
+            f"--build-arg BASE_IMAGE={BUILDER_BASE_IMAGE_BASENAME} "
+            f"--build-arg BUILDER_URL={conf.imagebuilder_url} "
+            f"--build-arg WORKDIR={BUILDER_WORKDIR} "
+            f"--build-arg WORKDIR_IMAGEBUILDER={BUILDER_WORKDIR_IMAGEBUILDER} "
+            f"--build-arg USER={BUILDER_USER} "
+            f"--build-arg UID={os.getuid()} "
+            f"--build-arg GID={os.getgid()} "
+            f"--tag {image_name}:latest "
+            f"--file {BUILDER_DOCKERFILE if not dockerfile else dockerfile} "
+            f"{' '.join(params) if params else ''}"
         )
-        cmd_params.append(f"--build-arg USER={BUILDER_USER}")
-        cmd_params.append(f"--build-arg UID={os.getuid()}")
-        cmd_params.append(f"--build-arg GID={os.getgid()}")
-        cmd_params.append(f"--tag {image_name}:latest")
-        cmd_params.append(
-            f"--file {BUILDER_DOCKERFILE if not dockerfile else dockerfile}"
-        )
-
-    if params:
-        cmd_params.append(*params)
 
     container_details = get_container_details(ctx, plat, image_name)
     do_build = False
@@ -201,9 +212,8 @@ def build_container(
     if do_build:
         log.info(f"(Re)building image: {image_name}")
         with ctx.cd(DOCKER_DIR):
-            command = " ".join(cmd_params)
             log.info(f"Build command: {command}")
-            ctx.run(command)
+            ctx.run(command, pty=True)
 
 
 @task(
@@ -213,7 +223,7 @@ def build_container(
     help={
         "config": "Name of the config file to use (default 'config.conf').",
         "cmd": "Command to run in the container.",
-        "workdir": "Working directory to mount in the container (default current directory).",
+        "workdir": f"Working directory to mount in the container (default '{ROOT_DIR}').",
         "params": "Optional parameters for container build command.",
     },
 )
@@ -221,7 +231,7 @@ def shell(
     ctx: "Context",
     config: str = "config.conf",
     cmd: Optional[str] = None,
-    workdir: str = os.getcwd(),
+    workdir: str = ROOT_DIR,
     params: Optional[list[str]] = None,
 ):
     """
@@ -230,9 +240,7 @@ def shell(
     plat = ctx.config.platform
 
     conf = parse_target_config(os.path.join(ROOT_DIR, config))
-    image_name = (
-        f"{BUILDER_IMAGE_BASENAME}-{conf.release_str}-{conf.target}-{conf.subtarget}"
-    )
+    image_name = conf.image_name(BUILDER_IMAGE_BASENAME)
 
     # Create output directory if not exists, overlay is optional
     ensure_dirs(workdir, ["output"])
@@ -290,18 +298,18 @@ def shell(
 
 
 @task(
-    pre=[check_platform],
+    pre=[check_platform, check_base_image],
     optional=["config", "workdir", "force"],
     help={
         "config": "Name of the config file to use (default 'config.conf').",
-        "workdir": "Working directory to mount in the container (default current directory).",
+        "workdir": f"Working directory to mount in the container (default '{ROOT_DIR}').",
         "force": "Force image and container image rebuild (default 'False').",
     },
 )
 def build(
     ctx: "Context",
     config: str = "config.conf",
-    workdir: str = os.getcwd(),
+    workdir: str = ROOT_DIR,
     force: Optional[bool] = False,
 ):
     """
@@ -322,19 +330,18 @@ def build(
 
     # Create output directory if not exists, overlay is optional
     ensure_dirs(workdir, ["output"])
+    overlay_dir = os.path.join(workdir, "overlay")
+    overlay_exists = os.path.exists(overlay_dir)
 
     # Build the image
-    cmd_params = [
-        f"make -C {BUILDER_WORKDIR_IMAGEBUILDER} image "
-        f"PROFILE={conf.profile} "
+    command = (
+        f"make -C '{BUILDER_WORKDIR_IMAGEBUILDER}' image "
+        f"PROFILE='{conf.profile}' "
         f"PACKAGES='{' '.join(conf.packages)}' "
         f"DISABLED_SERVICES='{' '.join(conf.disabled_services)}' "
-        f"BIN_DIR={to_builder_dir('output')} "
-    ]
-    if os.path.exists(os.path.join(workdir, "overlay")):
-        cmd_params.append(f"FILES={to_builder_dir('overlay')} ")
-
-    command = " ".join(cmd_params)
+        f"BIN_DIR='{to_builder_dir('output')}' "
+        f"{f"FILES='{to_builder_dir('overlay')}' " if overlay_exists else ''}"
+    )
 
     log.info(f"Build command: {command}")
     shell(ctx, config=config, cmd=command, workdir=workdir)
