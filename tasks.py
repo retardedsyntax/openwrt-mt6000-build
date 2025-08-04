@@ -44,6 +44,10 @@ def ensure_dirs(root: str, dirs: list[str]) -> None:
             os.makedirs(dpath)
 
 
+def to_builder_dir(dir: str, root: str = BUILDER_WORKDIR) -> str:
+    return os.path.join(root, dir)
+
+
 @attrs.define(frozen=True)
 class ContainerDetails:
     id: str
@@ -267,11 +271,11 @@ def shell(
         if os.path.exists(dpath):
             if plat == "podman":
                 mounts.append(
-                    f"--mount 'type=bind,src={dpath},dst={os.path.join(BUILDER_WORKDIR, d)},relabel=shared'"
+                    f"--mount 'type=bind,src={dpath},dst={to_builder_dir(d)},relabel=shared'"
                 )
             else:
                 mounts.append(
-                    f"--mount type=bind,source={dpath},destination={os.path.join(BUILDER_WORKDIR, d)}"
+                    f"--mount type=bind,source={dpath},destination={to_builder_dir(d)}"
                 )
     cmd_params.append(" ".join(mounts))
 
@@ -325,10 +329,10 @@ def build(
         f"PROFILE={conf.profile} "
         f"PACKAGES='{' '.join(conf.packages)}' "
         f"DISABLED_SERVICES='{' '.join(conf.disabled_services)}' "
-        f"BIN_DIR={os.path.join(BUILDER_WORKDIR, 'output')} "
+        f"BIN_DIR={to_builder_dir('output')} "
     ]
     if os.path.exists(os.path.join(workdir, "overlay")):
-        cmd_params.append(f"FILES={os.path.join(BUILDER_WORKDIR, 'overlay')} ")
+        cmd_params.append(f"FILES={to_builder_dir('overlay')} ")
 
     command = " ".join(cmd_params)
 
