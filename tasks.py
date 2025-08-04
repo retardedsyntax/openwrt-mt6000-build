@@ -3,7 +3,7 @@
 # -*- coding: utf-8 -*-
 import os
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Iterable, Optional
+from typing import TYPE_CHECKING, Optional
 
 import attrs
 import structlog
@@ -28,43 +28,19 @@ OUTPUT_DIR = os.path.join(ROOT_DIR, "output")
 DOCKER_DIR = os.path.join(ROOT_DIR, "docker")
 
 BASE_IMAGE = "ubuntu:22.04"
-
 BUILDER_BASE_DOCKERFILE = "Dockerfile.base"
-
+BUILDER_DOCKERFILE = "Dockerfile.builder"
 BUILDER_BASE_IMAGE_BASENAME = "imagebuilder-base"
 BUILDER_IMAGE_BASENAME = "openwrt-imagebuilder"
-
-BUILDER_DOCKERFILE = "Dockerfile.builder"
 BUILDER_WORKDIR = "/builder"
 BUILDER_USER = "buildbot"
 
 
-def create_dirmounts(platform: str, rootdir: str, dirnames: Iterable[str]) -> str:
-    mounts = []
-
-    if platform == "podman":
-        mounts.append(
-            f"--mount type=bind,src={rootdir},dst={BUILDER_WORKDIR},relabel=shared"
-        )
-    else:
-        mounts.append(
-            f"--mount type=bind,source={rootdir},destination={BUILDER_WORKDIR}"
-        )
-
-    for d in dirnames:
-        dpath = os.path.join(rootdir, d)
-
-        if os.path.exists(dpath):
-            if platform == "podman":
-                mounts.append(
-                    f"--mount type=bind,src={dpath},dst={os.path.join(BUILDER_WORKDIR, d)},relabel=shared"
-                )
-            else:
-                mounts.append(
-                    f"--mount type=bind,source={dpath},destination={os.path.join(BUILDER_WORKDIR, d)}"
-                )
-
-    return " ".join(mounts) + " "
+def ensure_dirs(root: str, dirs: list[str]) -> None:
+    for d in dirs:
+        dpath = os.path.join(root, d)
+        if not os.path.exists(dpath):
+            os.makedirs(dpath)
 
 
 @attrs.define(frozen=True)
@@ -146,141 +122,7 @@ def check_platform(ctx: "Context") -> None:
 @task(
     pre=[check_platform],
     iterable=["params"],
-    optional=["command", "config", "workdir"],
-    help={
-        "config": "Name of the config file to use (default 'config.conf').",
-        "cmd": "Command to run in the container.",
-        "workdir": "Working directory to mount in the container.",
-        "params": "Optional parameters for container build command.",
-    },
-)
-def shell(
-    ctx: "Context",
-    config: str = "config.conf",
-    cmd: Optional[str] = None,
-    workdir: str = os.getcwd(),
-    params: Optional[list[str]] = None,
-):
-    """
-    Start a shell in container, to either run a command or to run an interactive shell.
-    """
-    plat = ctx.config.platform
-
-    conf = parse_target_config(os.path.join(os.getcwd(), config))
-    image_name = (
-        f"{BUILDER_IMAGE_BASENAME}-{conf.release_str}-{conf.target}-{conf.subtarget}"
-    )
-
-    if not os.path.exists(workdir):
-        raise Exit(f"Working directory {workdir} doesn't exist - cannot continue!")
-
-    # Create output directory if not exists, overlay is optional
-    output_dir = os.path.join(workdir, "output")
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    # Env variables for the container
-    env_vars = [
-        f"--env '{n}={v}'"
-        for n, v in [
-            ("UID", os.getuid()),
-            ("GID", os.getgid()),
-            ("PLATFORM", plat),
-        ]
-    ]
-
-    # Construct the command
-    cmd_params = [
-        f"{plat} run --rm --interactive --tty --hostname '{image_name}' "
-        f"{'--userns=keep-id' if plat == 'podman' else f'-u {os.getuid()}:{os.getgid()}'} "
-        f"{' '.join(env_vars)}"
-    ]
-
-    # Construct mount params
-    if plat == "podman":
-        mounts = [
-            f"--mount 'type=bind,src={workdir},dst={BUILDER_WORKDIR},relabel=shared'"
-        ]
-    else:
-        mounts = [f"--mount 'type=bind,source={workdir},destination={BUILDER_WORKDIR}'"]
-
-    for d in ["output", "overlay"]:
-        dpath = os.path.join(workdir, d)
-        if os.path.exists(dpath):
-            if plat == "podman":
-                mounts.append(
-                    f"--mount 'type=bind,src={dpath},dst={os.path.join(BUILDER_WORKDIR, d)},relabel=shared'"
-                )
-            else:
-                mounts.append(
-                    f"--mount type=bind,source={dpath},destination={os.path.join(BUILDER_WORKDIR, d)}"
-                )
-    cmd_params.append(" ".join(mounts))
-
-    if params:
-        cmd_params.append(*params)
-    cmd_params.append(f"{image_name}:latest {f"bash -c '{cmd}'" if cmd else 'bash'}")
-
-    command = " ".join(cmd_params)
-
-    print(f"Shell command: {command}")
-    ctx.run(command, pty=True)
-
-
-@task(
-    pre=[check_platform],
-    optional=["workdir", "force"],
-    help={
-        "config": "Name of the config file to use.",
-        "workdir": "Working directory to mount in the container, defaults to current directory.",
-        "force": "Force rebuilding.",
-    },
-)
-def build(
-    ctx: "Context",
-    config: str,
-    workdir: str = os.getcwd(),
-    force: Optional[bool] = False,
-):
-    """
-    Build specified Docker/Podman image.
-    """
-    cfg = ctx.config.platform_config
-    confpath = os.path.join(os.getcwd(), config)
-    target_conf = parse_target_config(confpath)
-
-    print(f"Target configuration: {target_conf}")
-
-    # Build the builder image if needed
-    builder_image(
-        ctx, cfg.platform, cfg.user.uid, cfg.user.gid, target_conf, force=force
-    )
-
-    imgname = f"{BUILDER_IMAGE_BASENAME}-{target_conf.release_str}-{target_conf.target}-{target_conf.subtarget}"
-
-    # Create output directory if not exists, overlay is optional
-    if not os.path.exists(os.path.join(workdir, "output")):
-        os.makedirs(os.path.join(workdir, "output"))
-
-    # Build the image
-    command = (
-        f"make -C {BUILDER_WORKDIR} image "
-        f"PROFILE={target_conf.profile} "
-        f'PACKAGES="{" ".join(target_conf.packages)}" '
-        f'DISABLED_SERVICES="{" ".join(target_conf.disabled_services)}" '
-        f"{f'FILES={os.path.join(BUILDER_WORKDIR, "overlay")}' if os.path.exists(os.path.join(workdir, 'overlay')) else ''} "
-        f"BIN_DIR={os.path.join(BUILDER_WORKDIR, 'output')}"
-    )
-    print(f"Build command: {command}")
-    shell(ctx, image=imgname, cmd=command, workdir=workdir)
-
-    # print("Building {}!".format(config))
-
-
-@task(
-    pre=[check_platform],
-    iterable=["params"],
-    optional=["dockerfile", "config", "force"],
+    optional=["dockerfile", "config", "max_age", "force", "params"],
     help={
         "base": "Build base image (default 'True').",
         "config": "Name of the config file to use (default 'config.conf').",
@@ -290,7 +132,7 @@ def build(
         "params": "Optional parameters for container build command.",
     },
 )
-def build_image(
+def build_container(
     ctx: "Context",
     base: bool = True,
     dockerfile: Optional[str] = None,
@@ -356,13 +198,161 @@ def build_image(
             ctx.run(command)
 
 
-# Add all tasks to the namespace
-ns = Collection(
-    check_platform,
-    build_image,
-    build,
-    shell,
+@task(
+    pre=[check_platform],
+    iterable=["params"],
+    optional=["config", "cmd", "workdir", "params"],
+    help={
+        "config": "Name of the config file to use (default 'config.conf').",
+        "cmd": "Command to run in the container.",
+        "workdir": "Working directory to mount in the container (default current directory).",
+        "params": "Optional parameters for container build command.",
+    },
 )
+def shell(
+    ctx: "Context",
+    config: str = "config.conf",
+    cmd: Optional[str] = None,
+    workdir: str = os.getcwd(),
+    params: Optional[list[str]] = None,
+):
+    """
+    Start a shell in container, to either run a command or to run an interactive shell.
+    """
+    plat = ctx.config.platform
+
+    conf = parse_target_config(os.path.join(ROOT_DIR, config))
+    image_name = (
+        f"{BUILDER_IMAGE_BASENAME}-{conf.release_str}-{conf.target}-{conf.subtarget}"
+    )
+
+    # Create output directory if not exists, overlay is optional
+    ensure_dirs(workdir, ["output"])
+
+    uid = os.getuid()
+    gid = os.getgid()
+
+    # Env variables for the container
+    env_vars = [
+        f"--env '{n}={v}'"
+        for n, v in [
+            ("UID", uid),
+            ("GID", gid),
+            ("PLATFORM", plat),
+        ]
+    ]
+
+    # Construct the command
+    cmd_params = [
+        f"{plat} run --rm --interactive --tty --hostname '{image_name}' "
+        f"{'--userns=keep-id' if plat == 'podman' else f'-u {uid}:{gid}'} "
+        f"{' '.join(env_vars)}"
+    ]
+
+    # Construct mount params
+    mounts = []
+    # if plat == "podman":
+    #    mounts = [
+    #        f"--mount 'type=bind,src={workdir},dst={BUILDER_WORKDIR},relabel=shared'"
+    #    ]
+    # else:
+    #    mounts = [f"--mount 'type=bind,source={workdir},destination={BUILDER_WORKDIR}'"]
+
+    for d in ["output", "overlay"]:
+        dpath = os.path.join(workdir, d)
+        if os.path.exists(dpath):
+            if plat == "podman":
+                mounts.append(
+                    f"--mount 'type=bind,src={dpath},dst={os.path.join(BUILDER_WORKDIR, d)},relabel=shared'"
+                )
+            else:
+                mounts.append(
+                    f"--mount type=bind,source={dpath},destination={os.path.join(BUILDER_WORKDIR, d)}"
+                )
+    cmd_params.append(" ".join(mounts))
+
+    if params:
+        cmd_params.append(*params)
+    cmd_params.append(f"{image_name}:latest {f"bash -c '{cmd}'" if cmd else 'bash'}")
+
+    command = " ".join(cmd_params)
+
+    log.info(f"Shell command: {command}")
+    ctx.run(command, pty=True)
+
+
+@task(
+    pre=[check_platform],
+    optional=["config", "workdir", "force"],
+    help={
+        "config": "Name of the config file to use (default 'config.conf').",
+        "workdir": "Working directory to mount in the container (default current directory).",
+        "force": "Force image and container image rebuild (default 'False').",
+    },
+)
+def build(
+    ctx: "Context",
+    config: str = "config.conf",
+    workdir: str = os.getcwd(),
+    force: Optional[bool] = False,
+):
+    """
+    Build the OpenWRT image.
+    """
+    conf = parse_target_config(os.path.join(ROOT_DIR, config))
+
+    log.info(
+        f"Target configuration: \n"
+        f"\t\t\t\tOPENWRT_PROFILE -> {conf.profile}\n"
+        f"\t\t\t\tOPENWRT_RELEASE -> {conf.release}\n"
+        f"\t\t\t\tOPENWRT_TARGET -> {conf.target}\n"
+        f"\t\t\t\tOPENWRT_SUBTARGET -> {conf.subtarget}\n"
+    )
+
+    # Build image if needed
+    build_container(ctx, base=False, config=config, force=force)
+
+    # Create output directory if not exists, overlay is optional
+    ensure_dirs(workdir, ["output"])
+
+    # Build the image
+    cmd_params = [
+        f"make -C {os.path.join(BUILDER_WORKDIR, 'imagebuilder')} image "
+        f"PROFILE={conf.profile} "
+        f"PACKAGES='{' '.join(conf.packages)}' "
+        f"DISABLED_SERVICES='{' '.join(conf.disabled_services)}' "
+        f"BIN_DIR={os.path.join(BUILDER_WORKDIR, 'output')} "
+    ]
+    if os.path.exists(os.path.join(workdir, "overlay")):
+        cmd_params.append(f"FILES={os.path.join(BUILDER_WORKDIR, 'overlay')} ")
+
+    command = " ".join(cmd_params)
+
+    log.info(f"Build command: {command}")
+    shell(ctx, config=config, cmd=command, workdir=workdir)
+
+
+@task(
+    pre=[check_platform],
+    optional=["config"],
+    help={
+        "config": "Name of the config file to use (default 'config.conf').",
+    },
+)
+def info(
+    ctx: "Context",
+    config: str = "config.conf",
+):
+    """
+    Build the OpenWRT image.
+    """
+    command = f"make -C {os.path.join(BUILDER_WORKDIR, 'imagebuilder')} info"
+    log.info(f"Shell command: {command}")
+    shell(ctx, config=config, cmd=command)
+
+
+# Add all tasks to the namespace
+ns = Collection(check_platform, build_container, shell, build, info)
 # Configure every task to act as a shell command
 #   (will print colors, allow interactive CLI)
 # Add our extra configuration file for the project
