@@ -2,7 +2,7 @@
 import re
 import subprocess
 from datetime import timedelta
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, cast
 
 import attrs
 from semver import VersionInfo, parse_version_info
@@ -12,12 +12,20 @@ if TYPE_CHECKING:
 
 IB_BASE_URL = r"https://downloads.openwrt.org/releases/{}/targets/{}/{}/openwrt-imagebuilder-{}-{}-{}.Linux-x86_64.tar.{}"
 
+REQUIRED_CONFIG_KEYS = [
+    "OPENWRT_PROFILE",
+    "OPENWRT_RELEASE",
+    "OPENWRT_TARGET",
+    "OPENWRT_SUBTARGET",
+    "OPENWRT_PACKAGES",
+]
 
-def _subprocess_run_stdout(command: str) -> Optional[str]:
-    result = subprocess.run(command, shell=True, capture_output=True)
-    if result.returncode != 0:
-        return None
-    return result.stdout.decode().rstrip()
+
+# def _subprocess_run_stdout(command: str) -> Optional[str]:
+#    result = subprocess.run(command, shell=True, capture_output=True)
+#    if result.returncode != 0:
+#        return None
+#    return result.stdout.decode().rstrip()
 
 
 @attrs.define(frozen=True)
@@ -27,7 +35,6 @@ class TargetConfig:
     target: str
     subtarget: str
     packages: list[str] = attrs.field(converter=list)
-    # removed_packages: list[str] = attrs.field(converter=list)
     disabled_services: list[str] = attrs.field(converter=list)
 
     @property
@@ -67,56 +74,97 @@ def strip_whitespace(value: str) -> str:
     return value
 
 
-def parse_target_config(cfgpath: str) -> TargetConfig:
-    config_dict = {}
+# Handle possible multiline strings which continue with '\' (Bash-style).
+# contents = re.sub(r"(\\[\r?\n|\r]\s+)", "", contents)
+# Grab text between quotes containing newlines.
+# (?m)(?:[\'\"])([^\'\"]+)(?:[\'\"])
+# (?m)(?:[\w_\-\.]+)=(?:[\'\"])(?:[\w\d\s\\_\-\.]*)(?<=[\w\s])([\\\s]*\r?\n)
+# ^(?<!#)(?P<key>[\w_\-\.]+)=(?:[\'\"])?(?P<value>[\w\s\\_\-\.]*)(?:[\'\"])?$
+# (?=\r?\n|\r)
+# re.sub(r"(?m)(^#.*[\r?\n|\r])", "", contents)
+# ^[--]{1}.+(?=\r?\n|\r)
+
+
+def get_target_config(config_path: str) -> TargetConfig:
+    """
+    Parse target configuration file.
+
+    :param config_path: Path to target configuration file.
+    :type config_path: str
+    :raises RuntimeError: If the config does not contain all required keys.
+    :raises RuntimeError: If the config has invalid values for required keys.
+    :return: Target configuration.
+    :rtype: TargetConfig
+    """
+    c = {}
 
     try:
-        with open(cfgpath, "r") as f:
+        with open(config_path, "r") as f:
             contents = f.read()
 
-            # (?=\r?\n|\r)
-            # re.sub(r"(?m)(^#.*[\r?\n|\r])", "", contents)
-            # ^[--]{1}.+(?=\r?\n|\r)
+            # Remove comment lines starting with '#', or comments at the end of the line
+            contents = re.sub(r"(^#.*[\r?\n])", "", contents, flags=re.MULTILINE)
+            contents = re.sub(r"(#.*)(?=\r?\n)", "", contents)
 
-            # Step 1. Remove comment lines starting with '#'
-            contents = re.sub(r"(?m)(^#.*[\r?\n|\r])", "", contents)
+            # For easier parsing, remove newlines, backwards slashes ('\') and extra spaces
+            # within quoted strings. This handles Bash-style multiline strings into more
+            # tolerable form.
+            # contents = re.sub(r"(?<=[\w\s])([\\\s]*\r?\n)", " ", contents)
+            contents = re.sub(
+                r"(?:[\"\'])[^\"\']+(?:[\"\'])",
+                lambda m: re.sub(r"[\\\r\n\s]+", " ", m.group(0)),
+                contents,
+            )
 
-            # Step 2. Remove comments at the end of lines.
-            contents = re.sub(r"(#.*)(?=\r?\n|\r)", "", contents)
-
-            # Step 3. Handle possible multiline strings which continue with '\' (Bash-style).
-            contents = re.sub(r"(\\[\r?\n|\r]\s+)", "", contents)
-
-            # Match key and value separated with '=' in named groups.
-            # r"(?P<key>[\w\d _\-\.]+)=(?:[\'\"])?(?P<value>[\w\d _\-\.]*)(?:[\'\"])?(?:\r?\n|\r)"
+            # The actual processing, match key and value separated with '=' in named groups.
             pattern = re.compile(
-                r"(?P<key>[\w\d _\-\.]+)=(?:[\'\"])?(?P<value>[\w\d _\-\.]*)(?:[\'\"])?"
+                r"(?P<key>[\w\-\.]+)=(?:[\'\"])?(?P<value>[\w\s\-\.]*)(?:[\'\"])?"
             )
             for line in contents.splitlines():
                 if match := pattern.match(line):
-                    key = strip_whitespace(match["key"])
-                    value = strip_whitespace(match["value"])
-                    config_dict[key] = value
+                    k = strip_whitespace(match["key"])
+                    v = strip_whitespace(match["value"])
+                    c[k] = v
     except FileNotFoundError:
         pass
 
-    # pkgs = []
-    # removed = []
-    ## Separate packages
-    # for pkg in config_dict.get("OPENWRT_PACKAGES", "").split():
-    #    if re.match(r"^[--]{1}.+", pkg):
-    #        pkg = re.sub(r"^[--]+", "", pkg)
-    #        removed.append(pkg)
-    #    else:
-    #        pkgs.append(pkg)
+    # Validate that required config keys are present,
+    # and that there are values for each key.
+    if not all(k in c.keys() for k in REQUIRED_CONFIG_KEYS):
+        raise RuntimeError(
+            f"Config file {config_path} does not contain all required keys: {REQUIRED_CONFIG_KEYS}"
+        )
+    for k in c.keys():
+        if k in REQUIRED_CONFIG_KEYS:
+            v = c.get(k, None)
+            if not v or (isinstance(v, str) and v == ""):
+                raise RuntimeError(f"Config key {k} has invalid value: {v}")
+
+    # Maybe not needed?
+    # Separate packages to those being installed and those
+    # being removed.
+    #
+    # https://www.compart.com/en/unicode/category/Pd
+    # ^[\u002D\u2010].+$
+
+    profile = c.get("OPENWRT_PROFILE")
+    release = parse_version_info(c.get("OPENWRT_RELEASE"))
+    target = c.get("OPENWRT_TARGET")
+    subtarget = c.get("OPENWRT_SUBTARGET")
+    packages = c.get("OPENWRT_PACKAGES").split()
+    disabled_services = (
+        []
+        if "OPENWRT_DISABLED_SERVICES" not in c
+        else c.get("OPENWRT_DISABLED_SERVICES").split()
+    )
 
     return TargetConfig(
-        profile=config_dict.get("OPENWRT_PROFILE", ""),
-        release=parse_version_info(config_dict.get("OPENWRT_RELEASE", "")),
-        target=config_dict.get("OPENWRT_TARGET", ""),
-        subtarget=config_dict.get("OPENWRT_SUBTARGET", ""),
-        packages=config_dict.get("OPENWRT_PACKAGES", "").split(),
-        disabled_services=(config_dict.get("OPENWRT_DISABLED_SERVICES", "")).split(),
+        profile=profile,
+        release=release,
+        target=target,
+        subtarget=subtarget,
+        packages=packages,
+        disabled_services=disabled_services,
     )
 
 

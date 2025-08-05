@@ -12,7 +12,7 @@ from invoke.exceptions import Exit
 from invoke.tasks import task
 
 from task_utils import (
-    parse_target_config,
+    get_target_config,
     timedelta_to_dhms,
 )
 
@@ -23,17 +23,17 @@ log = structlog.get_logger()
 
 # Constants
 ROOT_DIR = os.path.dirname(__file__)
-OVERLAY_DIR = os.path.join(ROOT_DIR, "overlay")
 OUTPUT_DIR = os.path.join(ROOT_DIR, "output")
+OVERLAY_DIR = os.path.join(ROOT_DIR, "overlay")
 DOCKER_DIR = os.path.join(ROOT_DIR, "docker")
 
 BASE_IMAGE = "ubuntu:22.04"
-BUILDER_BASE_DOCKERFILE = "Dockerfile.base"
-BUILDER_DOCKERFILE = "Dockerfile.builder"
-BUILDER_BASE_IMAGE_BASENAME = "imagebuilder-base"
-BUILDER_IMAGE_BASENAME = "openwrt-imagebuilder"
-BUILDER_WORKDIR = "/builder"
-BUILDER_WORKDIR_IMAGEBUILDER = "/builder/imagebuilder"
+BASE_DOCKERFILE = "Dockerfile.base"
+IMAGEBUILDER_DOCKERFILE = "Dockerfile.builder"
+BASE_IMAGE_BASENAME = "imagebuilder-base"
+IMAGEBUILDER_IMAGE_BASENAME = "openwrt-imagebuilder"
+WORKDIR = "/builder"
+WORKDIR_IMAGEBUILDER = "/builder/imagebuilder"
 BUILDER_USER = "buildbot"
 
 
@@ -44,7 +44,7 @@ def ensure_dirs(root: str, dirs: list[str]) -> None:
             os.makedirs(dpath)
 
 
-def to_builder_dir(dir: str, root: str = BUILDER_WORKDIR) -> str:
+def to_builder_dir(dir: str, root: str = WORKDIR) -> str:
     return os.path.join(root, dir)
 
 
@@ -131,7 +131,7 @@ def check_base_image(ctx: "Context") -> None:
     """
     plat = ctx.config.platform
 
-    image_name = BUILDER_BASE_IMAGE_BASENAME
+    image_name = BASE_IMAGE_BASENAME
     container_details = get_container_details(ctx, plat, image_name)
     if not container_details:
         log.info(f"Base image '{image_name}' does not exist, building")
@@ -144,7 +144,7 @@ def check_base_image(ctx: "Context") -> None:
     optional=["dockerfile", "config", "max_age", "force", "params"],
     help={
         "base": "Build base image (default 'True').",
-        "config": "Name of the config file to use (default 'config.conf').",
+        "config": "Name of the config file to use (default 'default.conf').",
         "dockerfile": "Optional alternative Dockerfile to use.",
         "max_age": "Rebuild the image if the previous is more than N days old (default 3).",
         "force": "Force container image rebuild (default 'False').",
@@ -155,7 +155,7 @@ def build_container(
     ctx: "Context",
     base: bool = True,
     dockerfile: Optional[str] = None,
-    config: str = "config.conf",
+    config: str = "default.conf",
     max_age: int = 3,
     force: Optional[bool] = False,
     params: Optional[list[str]] = None,
@@ -169,29 +169,29 @@ def build_container(
     plat = ctx.config.platform
 
     if base:
-        image_name = BUILDER_BASE_IMAGE_BASENAME
+        image_name = BASE_IMAGE_BASENAME
         command = (
             f"{plat} build {'--no-cache ' if force else ''}"
             f"--build-arg BASE_IMAGE={BASE_IMAGE} "
             f"--tag {image_name}:latest "
-            f"--file {BUILDER_BASE_DOCKERFILE if not dockerfile else dockerfile} "
+            f"--file {BASE_DOCKERFILE if not dockerfile else dockerfile} "
             f"{' '.join(params) if params else ''}"
         )
     else:
-        conf = parse_target_config(os.path.join(os.getcwd(), config))
-        image_name = conf.image_name(BUILDER_IMAGE_BASENAME)
+        conf = get_target_config(os.path.join(os.getcwd(), config))
+        image_name = conf.image_name(IMAGEBUILDER_IMAGE_BASENAME)
 
         command = (
             f"{plat} build {'--no-cache ' if force else ''}"
-            f"--build-arg BASE_IMAGE={BUILDER_BASE_IMAGE_BASENAME} "
+            f"--build-arg BASE_IMAGE={BASE_IMAGE_BASENAME} "
             f"--build-arg BUILDER_URL={conf.imagebuilder_url} "
-            f"--build-arg WORKDIR={BUILDER_WORKDIR} "
-            f"--build-arg WORKDIR_IMAGEBUILDER={BUILDER_WORKDIR_IMAGEBUILDER} "
+            f"--build-arg WORKDIR={WORKDIR} "
+            # f"--build-arg WORKDIR_IMAGEBUILDER={WORKDIR_IMAGEBUILDER} "
             f"--build-arg USER={BUILDER_USER} "
             f"--build-arg UID={os.getuid()} "
             f"--build-arg GID={os.getgid()} "
             f"--tag {image_name}:latest "
-            f"--file {BUILDER_DOCKERFILE if not dockerfile else dockerfile} "
+            f"--file {IMAGEBUILDER_DOCKERFILE if not dockerfile else dockerfile} "
             f"{' '.join(params) if params else ''}"
         )
 
@@ -221,7 +221,7 @@ def build_container(
     iterable=["params"],
     optional=["config", "cmd", "workdir", "params"],
     help={
-        "config": "Name of the config file to use (default 'config.conf').",
+        "config": "Name of the config file to use (default 'default.conf').",
         "cmd": "Command to run in the container.",
         "workdir": f"Working directory to mount in the container (default '{ROOT_DIR}').",
         "params": "Optional parameters for container build command.",
@@ -229,7 +229,7 @@ def build_container(
 )
 def shell(
     ctx: "Context",
-    config: str = "config.conf",
+    config: str = "default.conf",
     cmd: Optional[str] = None,
     workdir: str = ROOT_DIR,
     params: Optional[list[str]] = None,
@@ -239,8 +239,8 @@ def shell(
     """
     plat = ctx.config.platform
 
-    conf = parse_target_config(os.path.join(ROOT_DIR, config))
-    image_name = conf.image_name(BUILDER_IMAGE_BASENAME)
+    conf = get_target_config(os.path.join(ROOT_DIR, config))
+    image_name = conf.image_name(IMAGEBUILDER_IMAGE_BASENAME)
 
     # Create output directory if not exists, overlay is optional
     ensure_dirs(workdir, ["output"])
@@ -301,21 +301,21 @@ def shell(
     pre=[check_platform, check_base_image],
     optional=["config", "workdir", "force"],
     help={
-        "config": "Name of the config file to use (default 'config.conf').",
+        "config": "Name of the config file to use (default 'default.conf').",
         "workdir": f"Working directory to mount in the container (default '{ROOT_DIR}').",
         "force": "Force image and container image rebuild (default 'False').",
     },
 )
 def build(
     ctx: "Context",
-    config: str = "config.conf",
+    config: str = "default.conf",
     workdir: str = ROOT_DIR,
     force: Optional[bool] = False,
 ):
     """
     Build the OpenWRT image.
     """
-    conf = parse_target_config(os.path.join(ROOT_DIR, config))
+    conf = get_target_config(os.path.join(ROOT_DIR, config))
 
     log.info(
         f"Target configuration: \n"
@@ -335,7 +335,7 @@ def build(
 
     # Build the image
     command = (
-        f"make -C '{BUILDER_WORKDIR_IMAGEBUILDER}' image "
+        f"make -C '{WORKDIR_IMAGEBUILDER}' image "
         f"PROFILE='{conf.profile}' "
         f"PACKAGES='{' '.join(conf.packages)}' "
         f"DISABLED_SERVICES='{' '.join(conf.disabled_services)}' "
@@ -351,17 +351,17 @@ def build(
     pre=[check_platform],
     optional=["config"],
     help={
-        "config": "Name of the config file to use (default 'config.conf').",
+        "config": "Name of the config file to use (default 'default.conf').",
     },
 )
 def info(
     ctx: "Context",
-    config: str = "config.conf",
+    config: str = "default.conf",
 ):
     """
     Show imagebuilder info.
     """
-    command = f"make -C {BUILDER_WORKDIR_IMAGEBUILDER} info"
+    command = f"make -C {WORKDIR_IMAGEBUILDER} info"
     log.info(f"Shell command: {command}")
     shell(ctx, config=config, cmd=command)
 
@@ -370,17 +370,17 @@ def info(
     pre=[check_platform],
     optional=["config"],
     help={
-        "config": "Name of the config file to use (default 'config.conf').",
+        "config": "Name of the config file to use (default 'default.conf').",
     },
 )
 def clean(
     ctx: "Context",
-    config: str = "config.conf",
+    config: str = "default.conf",
 ):
     """
     Clean OpenWRT build.
     """
-    command = f"make -C {BUILDER_WORKDIR_IMAGEBUILDER} clean"
+    command = f"make -C {WORKDIR_IMAGEBUILDER} clean"
     log.info(f"Shell command: {command}")
     shell(ctx, config=config, cmd=command)
 
