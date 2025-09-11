@@ -281,8 +281,8 @@ def shell(
             ("GID", gid),
             ("PLATFORM", plat),
             ("PROFILE", conf.profile),
-            # ("PACKAGES", f"{' '.join(conf.packages)}"),
-            # ("DISABLED_SERVICES", f"{' '.join(conf.disabled_services)}"),
+            ("PACKAGES", f"{' '.join(conf.packages)}"),
+            ("DISABLED_SERVICES", f"{' '.join(conf.disabled_services)}"),
             ("BIN_DIR", f"{to_container_path('output')}"),
         ]
     ]
@@ -295,9 +295,9 @@ def shell(
     ]
 
     # Append mount params
-    cmd_params.append(
-        " ".join(get_mounts(plat, ["output", "overlay", config], workdir))
-    )
+    # mounts = get_mounts(plat, ["output", "overlay", config], workdir)
+    mounts = get_mounts(plat, ["output", "overlay"], workdir)
+    cmd_params.append(" ".join(mounts))
 
     if params:
         cmd_params.append(*params)
