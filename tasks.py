@@ -32,36 +32,44 @@ BASE_DOCKERFILE = "Dockerfile.base"
 IMAGEBUILDER_DOCKERFILE = "Dockerfile.builder"
 BASE_IMAGE_BASENAME = "imagebuilder-base"
 IMAGEBUILDER_IMAGE_BASENAME = "openwrt-imagebuilder"
-WORKDIR = "/builder"
-WORKDIR_IMAGEBUILDER = "/builder/imagebuilder"
+CONTAINER_WORKDIR = "/builder"
+CONTAINER_WORKDIR_IMAGEBUILDER = "/builder/imagebuilder"
 BUILDER_USER = "buildbot"
 
 
-def to_builder_dir(dir: str, root: str = WORKDIR) -> str:
-    return os.path.join(root, dir)
+def to_container_path(path: str, dstroot: str = CONTAINER_WORKDIR) -> str:
+    return os.path.join(dstroot, path)
 
 
-def ensure_dirs(root: str, dirs: list[str]) -> None:
-    for d in dirs:
-        dpath = os.path.join(root, d)
-        if not os.path.exists(dpath):
-            os.makedirs(dpath)
+def ensure_dirs(rootpath: str, paths: list[str]) -> None:
+    for p in paths:
+        dp = os.path.join(rootpath, p)
+        if not os.path.exists(dp):
+            os.makedirs(dp)
 
 
-def to_mount_dirs(root: str, plat: str, dirs: list[str]) -> list[str]:
+def get_mount_param(
+    platform: str, path: str, srcroot: str = ROOT_DIR, dstroot: str = CONTAINER_WORKDIR
+) -> str:
+    srcpath = os.path.join(srcroot, path)
+    if os.path.exists(srcpath):
+        cpath = to_container_path(path, dstroot)
+        if platform == "podman":
+            return f"--mount 'type=bind,src={srcpath},dst={cpath},relabel=shared'"
+        else:
+            return f"--mount type=bind,source={srcpath},destination={cpath}"
+    return ""
+
+
+def get_mounts(
+    platform: str,
+    paths: list[str],
+    srcroot: str = ROOT_DIR,
+    dstroot: str = CONTAINER_WORKDIR,
+) -> list[str]:
     mounts = []
-
-    for d in dirs:
-        dpath = os.path.join(root, d)
-        if os.path.exists(dpath):
-            if plat == "podman":
-                mounts.append(
-                    f"--mount 'type=bind,src={dpath},dst={to_builder_dir(d)},relabel=shared'"
-                )
-            else:
-                mounts.append(
-                    f"--mount type=bind,source={dpath},destination={to_builder_dir(d)}"
-                )
+    for p in paths:
+        mounts.append(get_mount_param(platform, p, srcroot, dstroot))
     return mounts
 
 
@@ -202,7 +210,7 @@ def build_container(
             f"{plat} build {'--no-cache ' if force else ''}"
             f"--build-arg BASE_IMAGE={BASE_IMAGE_BASENAME} "
             f"--build-arg BUILDER_URL={conf.imagebuilder_url} "
-            f"--build-arg WORKDIR={WORKDIR} "
+            f"--build-arg WORKDIR={CONTAINER_WORKDIR} "
             # f"--build-arg WORKDIR_IMAGEBUILDER={WORKDIR_IMAGEBUILDER} "
             f"--build-arg USER={BUILDER_USER} "
             f"--build-arg UID={os.getuid()} "
@@ -275,7 +283,7 @@ def shell(
             ("PROFILE", conf.profile),
             # ("PACKAGES", f"{' '.join(conf.packages)}"),
             # ("DISABLED_SERVICES", f"{' '.join(conf.disabled_services)}"),
-            # ("BIN_DIR", f"{to_builder_dir('output')}"),
+            ("BIN_DIR", f"{to_container_path('output')}"),
         ]
     ]
 
@@ -286,27 +294,10 @@ def shell(
         f"{' '.join(env_vars)}"
     ]
 
-    # Construct mount params
-    mounts = []
-    # if plat == "podman":
-    #    mounts = [
-    #        f"--mount 'type=bind,src={workdir},dst={BUILDER_WORKDIR},relabel=shared'"
-    #    ]
-    # else:
-    #    mounts = [f"--mount 'type=bind,source={workdir},destination={BUILDER_WORKDIR}'"]
-
-    for d in ["output", "overlay"]:
-        dpath = os.path.join(workdir, d)
-        if os.path.exists(dpath):
-            if plat == "podman":
-                mounts.append(
-                    f"--mount 'type=bind,src={dpath},dst={to_builder_dir(d)},relabel=shared'"
-                )
-            else:
-                mounts.append(
-                    f"--mount type=bind,source={dpath},destination={to_builder_dir(d)}"
-                )
-    cmd_params.append(" ".join(mounts))
+    # Append mount params
+    cmd_params.append(
+        " ".join(get_mounts(plat, ["output", "overlay", config], workdir))
+    )
 
     if params:
         cmd_params.append(*params)
@@ -356,12 +347,12 @@ def build(
 
     # Build the image
     command = (
-        f"make -C '{WORKDIR_IMAGEBUILDER}' image "
+        f"make -C '{CONTAINER_WORKDIR_IMAGEBUILDER}' image "
         f"PROFILE='{conf.profile}' "
         f"PACKAGES='{' '.join(conf.packages)}' "
         f"DISABLED_SERVICES='{' '.join(conf.disabled_services)}' "
-        f"BIN_DIR='{to_builder_dir('output')}' "
-        f"{f"FILES='{to_builder_dir('overlay')}' " if overlay_exists else ''}"
+        f"BIN_DIR='{to_container_path('output')}' "
+        f"{f"FILES='{to_container_path('overlay')}' " if overlay_exists else ''}"
     )
 
     log.info(f"Build command: {command}")
@@ -382,7 +373,7 @@ def info(
     """
     Show imagebuilder info.
     """
-    command = f"make -C {WORKDIR_IMAGEBUILDER} info"
+    command = f"make -C {CONTAINER_WORKDIR_IMAGEBUILDER} info"
     log.info(f"Shell command: {command}")
     shell(ctx, config=config, cmd=command)
 
@@ -401,7 +392,7 @@ def clean(
     """
     Clean OpenWRT build.
     """
-    command = f"make -C {WORKDIR_IMAGEBUILDER} clean"
+    command = f"make -C {CONTAINER_WORKDIR_IMAGEBUILDER} clean"
     log.info(f"Shell command: {command}")
     shell(ctx, config=config, cmd=command)
 
