@@ -37,6 +37,10 @@ WORKDIR_IMAGEBUILDER = "/builder/imagebuilder"
 BUILDER_USER = "buildbot"
 
 
+def to_builder_dir(dir: str, root: str = WORKDIR) -> str:
+    return os.path.join(root, dir)
+
+
 def ensure_dirs(root: str, dirs: list[str]) -> None:
     for d in dirs:
         dpath = os.path.join(root, d)
@@ -44,8 +48,21 @@ def ensure_dirs(root: str, dirs: list[str]) -> None:
             os.makedirs(dpath)
 
 
-def to_builder_dir(dir: str, root: str = WORKDIR) -> str:
-    return os.path.join(root, dir)
+def to_mount_dirs(root: str, plat: str, dirs: list[str]) -> list[str]:
+    mounts = []
+
+    for d in dirs:
+        dpath = os.path.join(root, d)
+        if os.path.exists(dpath):
+            if plat == "podman":
+                mounts.append(
+                    f"--mount 'type=bind,src={dpath},dst={to_builder_dir(d)},relabel=shared'"
+                )
+            else:
+                mounts.append(
+                    f"--mount type=bind,source={dpath},destination={to_builder_dir(d)}"
+                )
+    return mounts
 
 
 @attrs.define(frozen=True)
@@ -224,7 +241,7 @@ def build_container(
         "config": "Name of the config file to use (default 'default.conf').",
         "cmd": "Command to run in the container.",
         "workdir": f"Working directory to mount in the container (default '{ROOT_DIR}').",
-        "params": "Optional parameters for container build command.",
+        "params": "Optional parameters.",
     },
 )
 def shell(
@@ -255,6 +272,10 @@ def shell(
             ("UID", uid),
             ("GID", gid),
             ("PLATFORM", plat),
+            ("PROFILE", conf.profile),
+            # ("PACKAGES", f"{' '.join(conf.packages)}"),
+            # ("DISABLED_SERVICES", f"{' '.join(conf.disabled_services)}"),
+            # ("BIN_DIR", f"{to_builder_dir('output')}"),
         ]
     ]
 
