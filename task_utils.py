@@ -1,17 +1,11 @@
 # -*- coding: utf-8 -*-
-import re
 import os
-import subprocess
-from datetime import timedelta
-from typing import TYPE_CHECKING, Optional, cast
+import re
 
 import attrs
 from semver import VersionInfo, parse_version_info
 
-if TYPE_CHECKING:
-    pass
-
-IB_BASE_URL = r"https://downloads.openwrt.org/releases/{}/targets/{}/{}/openwrt-imagebuilder-{}-{}-{}.Linux-x86_64.tar.{}"
+IMAGEBUILDER_BASE_URL = r"https://downloads.openwrt.org/releases/{}/targets/{}/{}/openwrt-imagebuilder-{}-{}-{}.Linux-x86_64.tar.{}"
 
 REQUIRED_CONFIG_KEYS = [
     "OPENWRT_PROFILE",
@@ -49,7 +43,7 @@ class TargetConfig:
         else:
             ext = "xz"
 
-        url = IB_BASE_URL.format(
+        url = IMAGEBUILDER_BASE_URL.format(
             self.release_str,
             self.target,
             self.subtarget,
@@ -172,18 +166,18 @@ def get_target_config(config_path: str) -> TargetConfig:
     )
 
 
-def timedelta_to_dhms(td: timedelta) -> tuple[int, int, int, float]:
-    """
-    Convert `datetime.timedelta` to days, hours, minutes and seconds.
-
-    :param td: Time delta to convert.
-    :type td: timedelta
-    :return: Tuple of days, hours, minutes and seconds.
-    :rtype: tuple[int, int, int, float]
-    """
-    days = td.days
-    hours, remainder = divmod(td.seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    seconds += td.microseconds / 1e6
-
-    return (days, hours, minutes, seconds)
+# def timedelta_to_dhms(td: timedelta) -> tuple[int, int, int, float]:
+#    """
+#    Convert `datetime.timedelta` to days, hours, minutes and seconds.
+#
+#    :param td: Time delta to convert.
+#    :type td: timedelta
+#    :return: Tuple of days, hours, minutes and seconds.
+#    :rtype: tuple[int, int, int, float]
+#    """
+#    days = td.days
+#    hours, remainder = divmod(td.seconds, 3600)
+#    minutes, seconds = divmod(remainder, 60)
+#    seconds += td.microseconds / 1e6
+#
+#    return (days, hours, minutes, seconds)

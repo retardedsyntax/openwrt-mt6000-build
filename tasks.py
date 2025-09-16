@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 
 # -*- coding: utf-8 -*-
-from optparse import Option
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Optional
 
-import attrs
 import structlog
 from invoke.collection import Collection
 from invoke.exceptions import Exit
@@ -14,7 +12,6 @@ from invoke.tasks import task
 
 from task_utils import (
     get_target_config,
-    timedelta_to_dhms,
 )
 
 if TYPE_CHECKING:
