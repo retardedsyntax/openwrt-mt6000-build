@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import re
+import os
 import subprocess
 from datetime import timedelta
 from typing import TYPE_CHECKING, Optional, cast
@@ -96,6 +97,9 @@ def get_target_config(config_path: str) -> TargetConfig:
     :return: Target configuration.
     :rtype: TargetConfig
     """
+    if not (config_path or os.path.exists(config_path)):
+        raise RuntimeError("Config file not found")
+
     c = {}
 
     try:

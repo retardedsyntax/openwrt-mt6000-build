@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 
 # -*- coding: utf-8 -*-
+from optparse import Option
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Optional
 
 import attrs
@@ -21,105 +22,183 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger()
 
+
+def join_path(p1: str, p2: str) -> str:
+    return os.path.join(p1, p2)
+
+
 # Constants
-ROOT_DIR = os.path.dirname(__file__)
-OUTPUT_DIR = os.path.join(ROOT_DIR, "output")
-OVERLAY_DIR = os.path.join(ROOT_DIR, "overlay")
-DOCKER_DIR = os.path.join(ROOT_DIR, "docker")
+PROJECT_ROOT = os.path.dirname(__file__)
+OUTPUT_DIR = join_path(PROJECT_ROOT, "output")
+OVERLAY_DIR = join_path(PROJECT_ROOT, "overlay")
+DOCKERFILE_DIR = join_path(PROJECT_ROOT, "docker")
 
-BASE_IMAGE = "ubuntu:22.04"
+DEFAULT_MAX_AGE = 3
+DEFAULT_CONF = "default.conf"
+
+IMAGE_BASE = "ubuntu:22.04"
 BASE_DOCKERFILE = "Dockerfile.base"
-IMAGEBUILDER_DOCKERFILE = "Dockerfile.builder"
-BASE_IMAGE_BASENAME = "imagebuilder-base"
-IMAGEBUILDER_IMAGE_BASENAME = "openwrt-imagebuilder"
-CONTAINER_WORKDIR = "/builder"
-CONTAINER_WORKDIR_IMAGEBUILDER = "/builder/imagebuilder"
-BUILDER_USER = "buildbot"
+BASE_IMAGE_NAME = "openwrt-base"
+
+IMAGEBUILDER_DOCKERFILE = "Dockerfile.imagebuilder"
+IMAGEBUILDER_IMAGE_NAME = "openwrt-imagebuilder"
+IMAGEBUILDER_WORKDIR_ROOT = "/builder"
+IMAGEBUILDER_WORKDIR = f"{IMAGEBUILDER_WORKDIR_ROOT}/imagebuilder"
+IMAGEBUILDER_USER = "buildbot"
+
+###############################################################################
+## Utilities
+###############################################################################
 
 
-def to_container_path(path: str, dstroot: str = CONTAINER_WORKDIR) -> str:
-    return os.path.join(dstroot, path)
+def source_path(path: str, source_root: str = PROJECT_ROOT) -> str:
+    return join_path(source_root, path)
 
 
-def ensure_dirs(rootpath: str, paths: list[str]) -> None:
-    for p in paths:
-        dp = os.path.join(rootpath, p)
+def target_path(path: str, target_root: str = IMAGEBUILDER_WORKDIR_ROOT) -> str:
+    return join_path(target_root, path)
+
+
+## Check that specified directory exists, create if necessary.
+def check_dir(path: str | None = None, root_path: str = PROJECT_ROOT) -> None:
+    if path:
+        dp = join_path(root_path, path)
         if not os.path.exists(dp):
             os.makedirs(dp)
 
 
-def get_mount_param(
-    platform: str, path: str, srcroot: str = ROOT_DIR, dstroot: str = CONTAINER_WORKDIR
-) -> str:
-    srcpath = os.path.join(srcroot, path)
-    if os.path.exists(srcpath):
-        cpath = to_container_path(path, dstroot)
-        if platform == "podman":
-            return f"--mount 'type=bind,src={srcpath},dst={cpath},relabel=shared'"
-        else:
-            return f"--mount type=bind,source={srcpath},destination={cpath}"
-    return ""
+## Check that required directories exist in the given root path,
+## and create them if necessary.
+def check_dirs(paths: list[str] = [OUTPUT_DIR], root_path: str = PROJECT_ROOT) -> None:
+    # Output directory is required
+    if OUTPUT_DIR not in paths:
+        paths += OUTPUT_DIR
+
+    for p in paths:
+        check_dir(p, root_path)
 
 
-def get_mounts(
+## Generate platorm-specific mount parameter string.
+def create_mount_param(
     platform: str,
-    paths: list[str],
-    srcroot: str = ROOT_DIR,
-    dstroot: str = CONTAINER_WORKDIR,
+    path: str,
+    source_root: str = PROJECT_ROOT,
+    target_root: str = IMAGEBUILDER_WORKDIR_ROOT,
+) -> str | None:
+    sp = source_path(path, source_root)
+    tp = target_path(path, target_root)
+
+    if not os.path.exists(sp):
+        return None
+    if platform == "podman":
+        return f"--mount 'type=bind,src={sp},dst={tp},relabel=shared'"
+    else:
+        return f"--mount type=bind,source={sp},destination={tp}"
+
+
+def create_mount_params(
+    platform: str,
+    paths: list[str] = [],
+    source_root: str = PROJECT_ROOT,
+    target_root: str = IMAGEBUILDER_WORKDIR_ROOT,
 ) -> list[str]:
     mounts = []
     for p in paths:
-        mounts.append(get_mount_param(platform, p, srcroot, dstroot))
+        res = create_mount_param(platform, p, source_root, target_root)
+        if res:
+            mounts.append(res)
     return mounts
 
 
-@attrs.define(frozen=True)
-class ContainerDetails:
-    id: str
-    age_days: int = attrs.field(default=0)
-    age_hours: int = attrs.field(default=0)
-    age_minutes: int = attrs.field(default=0)
-    age_seconds: float = attrs.field(default=0)
+# @attrs.define(frozen=True)
+# class ContainerDetails:
+#    id: str
+#    age_days: int = attrs.field(default=0)
+#    age_hours: int = attrs.field(default=0)
+#    age_minutes: int = attrs.field(default=0)
+#    age_seconds: float = attrs.field(default=0)
+#
+#
+# def get_container_details(
+#    ctx: "Context", platform: str, image_name: str
+# ) -> Optional[ContainerDetails]:
+#    # Try to find the container
+#    container_id = None
+#    res = ctx.run(f"{platform} images -q {image_name}:latest", hide=True)
+#    if res and not res.failed:
+#        out = res.stdout.rstrip()
+#        if out and out != "":
+#            container_id = out
+#
+#    if not container_id:
+#        log.info(f"No container with name '{image_name}' exists")
+#        return None
+#
+#    log.info(f"Found container ID for name '{image_name}': {container_id}")
+#
+#    # Check the image age
+#    res = ctx.run(
+#        f"{platform} inspect -f '{{{{ .Created }}}}' {container_id}", hide=True
+#    )
+#    if not res or res.failed:
+#        return ContainerDetails(container_id)
+#
+#    stamp = res.stdout.rstrip()
+#
+#    # Hacky hack, remove part of the timestamp
+#    # because `strptime` only understands 6 digits
+#    # in the microsecond part.
+#    #
+#    # test = "2025-08-02 16:07:16.299542344 +0000 UTC"
+#    # test = test[:26] + test[29:]
+#    stamp = stamp[:26] + stamp[29:]
+#    days, hours, minutes, seconds = timedelta_to_dhms(
+#        datetime.now(timezone.utc)
+#        - datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S.%f %z %Z")
+#    )
+#    return ContainerDetails(container_id, days, hours, minutes, seconds)
 
 
-def get_container_details(
-    ctx: "Context", platform: str, image_name: str
-) -> Optional[ContainerDetails]:
+def get_image_id(ctx: "Context", platform: str, image_name: str) -> Optional[str]:
     # Try to find the container
     container_id = None
-    res = ctx.run(f"{platform} images -q {image_name}:latest", hide=True)
+    res = ctx.run(f"{platform} images -q {image_name}", hide=True, warn=True)
     if res and not res.failed:
         out = res.stdout.rstrip()
         if out and out != "":
             container_id = out
 
     if not container_id:
-        log.info(f"No container with name '{image_name}' exists")
+        log.info(f"No container with name '{image_name}' found")
         return None
+    return container_id
 
-    log.info(f"Found container ID for name '{image_name}': {container_id}")
 
-    # Check the image age
+def get_image_datetime(
+    ctx: "Context", platform: str, image_name: str
+) -> Optional[datetime]:
     res = ctx.run(
-        f"{platform} inspect -f '{{{{ .Created }}}}' {container_id}", hide=True
+        f"{platform} history --format '{{{{ .CreatedAt }}}}' {image_name}",
+        hide=True,
+        warn=True,
     )
-    if not res or res.failed:
-        return ContainerDetails(container_id)
+    if res and not res.failed:
+        out = res.stdout.rstrip()
+        if out and out != "":
+            return datetime.strptime(out.splitlines()[0], "%Y-%m-%dT%H:%M:%S%z")
 
-    stamp = res.stdout.rstrip()
+    log.info(f"No date found for '{image_name}'")
+    return None
 
-    # Hacky hack, remove part of the timestamp
-    # because `strptime` only understands 6 digits
-    # in the microsecond part.
-    #
-    # test = "2025-08-02 16:07:16.299542344 +0000 UTC"
-    # test = test[:26] + test[29:]
-    stamp = stamp[:26] + stamp[29:]
-    days, hours, minutes, seconds = timedelta_to_dhms(
-        datetime.now(timezone.utc)
-        - datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S.%f %z %Z")
-    )
-    return ContainerDetails(container_id, days, hours, minutes, seconds)
+
+def get_image_timedelta(ctx: "Context", platform: str, image_name: str) -> timedelta:
+    dt = get_image_datetime(ctx, platform, image_name)
+    if dt:
+        return datetime.now(dt.tzinfo) - dt
+    return timedelta()
+
+
+###############################################################################
 
 
 @task
@@ -149,159 +228,227 @@ def check_platform(ctx: "Context") -> None:
         cfg.platform = platform
 
 
-@task(pre=[check_platform])
-def check_base_image(ctx: "Context") -> None:
+@task
+def check_prerequisites(ctx: "Context") -> None:
     """
-    Check if the imagebuilder base image exists, and rebuild if necessary.
+    Check prerequisites like required directories.
     """
-    plat = ctx.config.platform
-
-    image_name = BASE_IMAGE_BASENAME
-    container_details = get_container_details(ctx, plat, image_name)
-    if not container_details:
-        log.info(f"Base image '{image_name}' does not exist, building")
-        build_container(ctx, base=True, force=True)
-
-
-@task(
-    pre=[check_platform, check_base_image],
-    iterable=["params"],
-    optional=["dockerfile", "config", "max_age", "force", "params"],
-    help={
-        "base": "Build base image (default 'True').",
-        "config": "Name of the config file to use (default 'default.conf').",
-        "dockerfile": "Optional alternative Dockerfile to use.",
-        "max_age": "Rebuild the image if the previous is more than N days old (default 3).",
-        "force": "Force container image rebuild (default 'False').",
-        "params": "Optional parameters for container build command.",
-    },
-)
-def build_container(
-    ctx: "Context",
-    base: bool = True,
-    dockerfile: Optional[str] = None,
-    config: str = "default.conf",
-    max_age: int = 3,
-    force: Optional[bool] = False,
-    params: Optional[list[str]] = None,
-) -> None:
-    """
-    Build specified container image.
-
-    If the `base` parameter is `False`, the `config` parameter must be
-    provided, to parse the configuration and determine image name.
-    """
-    plat = ctx.config.platform
-
-    if base:
-        image_name = BASE_IMAGE_BASENAME
-        command = (
-            f"{plat} build {'--no-cache ' if force else ''}"
-            f"--build-arg BASE_IMAGE={BASE_IMAGE} "
-            f"--tag {image_name}:latest "
-            f"--file {BASE_DOCKERFILE if not dockerfile else dockerfile} "
-            f"{' '.join(params) if params else ''}"
-        )
-    else:
-        conf = get_target_config(os.path.join(os.getcwd(), config))
-        image_name = conf.image_name(IMAGEBUILDER_IMAGE_BASENAME)
-
-        command = (
-            f"{plat} build {'--no-cache ' if force else ''}"
-            f"--build-arg BASE_IMAGE={BASE_IMAGE_BASENAME} "
-            f"--build-arg BUILDER_URL={conf.imagebuilder_url} "
-            f"--build-arg WORKDIR={CONTAINER_WORKDIR} "
-            # f"--build-arg WORKDIR_IMAGEBUILDER={WORKDIR_IMAGEBUILDER} "
-            f"--build-arg USER={BUILDER_USER} "
-            f"--build-arg UID={os.getuid()} "
-            f"--build-arg GID={os.getgid()} "
-            f"--tag {image_name}:latest "
-            f"--file {IMAGEBUILDER_DOCKERFILE if not dockerfile else dockerfile} "
-            f"{' '.join(params) if params else ''}"
-        )
-
-    container_details = get_container_details(ctx, plat, image_name)
-    do_build = False
-
-    if not container_details or force:
-        do_build = True
-    else:
-        if container_details.age_days <= max_age:
-            log.info(f"Image '{image_name}' less than {max_age} days old, skipping")
-        elif container_details.age_days > max_age:
-            log.info(f"Image '{image_name}' older than {max_age} days, rebuilding")
-            do_build = True
-        else:
-            log.info(f"Image '{image_name}' already exists, skipping")
-
-    if do_build:
-        log.info(f"(Re)building image: {image_name}")
-        with ctx.cd(DOCKER_DIR):
-            log.info(f"Build command: {command}")
-            ctx.run(command, pty=True)
+    check_dirs()
 
 
 @task(
     pre=[check_platform],
     iterable=["params"],
-    optional=["config", "cmd", "workdir", "params"],
+    optional=["dockerfile", "max_age", "force", "params"],
     help={
-        "config": "Name of the config file to use (default 'default.conf').",
+        "dockerfile": "Optional alternative Dockerfile to use (default '{BUILDER_BASE_DOCKERFILE}').",
+        "max_age": f"Rebuild the image if the previous is more than N days old (default {DEFAULT_MAX_AGE}).",
+        "force": "Force container image rebuild (default 'False').",
+        "params": "Optional parameters for container build command.",
+    },
+)
+def baseimage(
+    ctx: "Context",
+    dockerfile: Optional[str] = BASE_DOCKERFILE,
+    max_age: int = DEFAULT_MAX_AGE,
+    force: Optional[bool] = False,
+    params: Optional[list[str]] = None,
+) -> None:
+    """
+    Build base container image.
+    """
+    plat = ctx.config.platform
+    image_name = BASE_IMAGE_NAME
+
+    # Check if image exists, and if so, check the age
+    id = get_image_id(ctx, plat, image_name)
+    td = get_image_timedelta(ctx, plat, image_name)
+    if not id:
+        log.info(f"Image '{image_name}' does not exist, building.")
+    elif force:
+        log.info(f"Forcing rebuild of image: '{image_name}'")
+    elif td.days > max_age:
+        log.info(f"Image '{image_name}' is more than {max_age} days old, rebuilding.")
+    else:
+        log.info(f"Image '{image_name}' exists, skipping.")
+        return
+
+    cmd_params = [f"{plat} build"]
+    if force:
+        cmd_params.append("--no-cache")
+    if plat == "podman":
+        cmd_params.append("--format=docker")
+    cmd_params.append(f"--build-arg IMAGE_BASE='{IMAGE_BASE}'")
+    cmd_params.append(f"--tag '{image_name}:latest'")
+    cmd_params.append(f"--file '{dockerfile}'")
+
+    if params:
+        cmd_params = cmd_params + params
+
+    cmd = " ".join(cmd_params)
+
+    with ctx.cd(DOCKERFILE_DIR):
+        log.info(f"Build command: {cmd}")
+        ctx.run(cmd, pty=True)
+
+
+@task(pre=[check_platform])
+def check_base_image(ctx: "Context") -> None:
+    """
+    Check if the base image exists, and rebuild if necessary.
+    """
+    plat = ctx.config.platform
+    image_name = BASE_IMAGE_NAME
+    id = get_image_id(ctx, plat, image_name)
+    if not id:
+        log.info(f"Image '{image_name}' does not exist, building.")
+        baseimage(ctx, force=True)
+
+
+@task(
+    pre=[check_platform, check_base_image],
+    iterable=["params"],
+    optional=["config", "dockerfile", "max_age", "force", "params"],
+    help={
+        "config": f"Name of the config file to use (default '{DEFAULT_CONF}').",
+        "dockerfile": "Optional alternative Dockerfile to use.",
+        "max_age": f"Rebuild the image if the previous is more than N days old (default {DEFAULT_MAX_AGE}).",
+        "force": "Force container image rebuild (default 'False').",
+        "params": "Optional parameters for container build command.",
+    },
+)
+def imagebuilder(
+    ctx: "Context",
+    config: str = DEFAULT_CONF,
+    dockerfile: Optional[str] = None,
+    max_age: int = DEFAULT_MAX_AGE,
+    force: Optional[bool] = False,
+    params: Optional[list[str]] = None,
+) -> None:
+    """
+    Build imagebuilder image.
+    """
+    plat = ctx.config.platform
+
+    conf = get_target_config(join_path(os.getcwd(), config))
+    image_name = conf.image_name(IMAGEBUILDER_IMAGE_NAME)
+    dfile = dockerfile if dockerfile else IMAGEBUILDER_DOCKERFILE
+
+    # Check if image exists, and if so, check the age
+    id = get_image_id(ctx, plat, image_name)
+    td = get_image_timedelta(ctx, plat, image_name)
+    if not id:
+        log.info(f"Image '{image_name}' does not exist, building.")
+    elif force:
+        log.info(f"Forcing rebuild of image: '{image_name}'")
+    elif td.days > max_age:
+        log.info(f"Image '{image_name}' is more than {max_age} days old, rebuilding.")
+    else:
+        log.info(f"Image '{image_name}' exists, skipping.")
+        return
+
+    cmd_params = [f"{plat} build"]
+    if force:
+        cmd_params.append("--no-cache")
+    if plat == "podman":
+        cmd_params.append("--format=docker")
+    cmd_params.append(f"--build-arg IMAGE_BASE='{BASE_IMAGE_NAME}'")
+    cmd_params.append(f"--build-arg BUILDER_URL='{conf.imagebuilder_url}'")
+    cmd_params.append(f"--build-arg BUILDER_WORKDIR_ROOT='{IMAGEBUILDER_WORKDIR_ROOT}'")
+    cmd_params.append(f"--build-arg BUILDER_WORKDIR='{IMAGEBUILDER_WORKDIR}'")
+    cmd_params.append(f"--build-arg BUILDER_USER='{IMAGEBUILDER_USER}'")
+    cmd_params.append(f"--build-arg BUILDER_UID='{os.getuid()}'")
+    cmd_params.append(f"--build-arg BUILDER_GID='{os.getgid()}'")
+    cmd_params.append(f"--tag '{image_name}:latest'")
+    cmd_params.append(f"--file '{dfile}'")
+
+    if params:
+        cmd_params = cmd_params + params
+
+    cmd = " ".join(cmd_params)
+
+    with ctx.cd(DOCKERFILE_DIR):
+        log.info(f"Build command: {cmd}")
+        ctx.run(cmd, pty=True)
+
+
+@task(
+    pre=[check_platform, check_prerequisites],
+    iterable=["params"],
+    optional=["base", "config", "cmd", "workdir", "params"],
+    help={
+        "base": "Whether to start the shell in base image (default 'False')",
+        "config": f"Name of the config file to use (default '{DEFAULT_CONF}').",
         "cmd": "Command to run in the container.",
-        "workdir": f"Working directory to mount in the container (default '{ROOT_DIR}').",
-        "params": "Optional parameters.",
+        "workdir": f"Working directory to mount in the container (default '{PROJECT_ROOT}').",
+        "params": "Optional parameters for shell command.",
     },
 )
 def shell(
     ctx: "Context",
-    config: str = "default.conf",
+    base: Optional[bool] = False,
+    config: str = DEFAULT_CONF,
     cmd: Optional[str] = None,
-    workdir: str = ROOT_DIR,
+    workdir: str = PROJECT_ROOT,
     params: Optional[list[str]] = None,
 ):
     """
     Start a shell in container, to either run a command or to run an interactive shell.
+    If `base` is `False`, the `config` parameter is required.
     """
     plat = ctx.config.platform
 
-    conf = get_target_config(os.path.join(ROOT_DIR, config))
-    image_name = conf.image_name(IMAGEBUILDER_IMAGE_BASENAME)
-
-    # Create output directory if not exists, overlay is optional
-    ensure_dirs(workdir, ["output"])
-
     uid = os.getuid()
     gid = os.getgid()
-
-    # Env variables for the container
-    env_vars = [
+    env_params = [
         f"--env '{n}={v}'"
         for n, v in [
             ("UID", uid),
             ("GID", gid),
             ("PLATFORM", plat),
-            ("PROFILE", conf.profile),
-            ("PACKAGES", f"{' '.join(conf.packages)}"),
-            ("DISABLED_SERVICES", f"{' '.join(conf.disabled_services)}"),
-            ("BIN_DIR", f"{to_container_path('output')}"),
         ]
     ]
 
-    # Construct the command
-    cmd_params = [
-        f"{plat} run --rm --interactive --tty --hostname '{image_name}' "
-        f"{'--userns=keep-id' if plat == 'podman' else f'-u {uid}:{gid}'} "
-        f"{' '.join(env_vars)}"
-    ]
+    if base:
+        image_name = BASE_IMAGE_NAME
+        mounts = []
+    else:
+        conf = get_target_config(join_path(PROJECT_ROOT, config))
+        image_name = conf.image_name(IMAGEBUILDER_IMAGE_NAME)
+        id = get_image_id(ctx, plat, image_name)
+        if not id:
+            log.info(f"Image '{image_name}' does not exist.")
+            return
 
-    # Append mount params
-    # mounts = get_mounts(plat, ["output", "overlay", config], workdir)
-    mounts = get_mounts(plat, ["output", "overlay"], workdir)
-    cmd_params.append(" ".join(mounts))
+        # env_params += [
+        #    f"--env '{n}={v}'"
+        #    for n, v in [
+        #        # ("PROFILE", conf.profile),
+        #        # ("PACKAGES", f"{' '.join(conf.packages)}"),
+        #        # ("DISABLED_SERVICES", f"{' '.join(conf.disabled_services)}"),
+        #        # ("BIN_DIR", f"{to_container_path('output')}"),
+        #    ]
+        # ]
+        mounts = create_mount_params(plat, [OUTPUT_DIR, OVERLAY_DIR], workdir)
+        mounts += create_mount_params(plat, [config], workdir, IMAGEBUILDER_WORKDIR)
+
+    # Check required directories
+    check_dirs(root_path=workdir)
+
+    # Construct the command
+    cmd_params = [f"{plat} run --rm --interactive --tty --hostname '{image_name}' "]
+    if plat == "podman":
+        cmd_params.append("--userns=keep-id")
+    else:
+        cmd_params.append(f"-u {uid}:{gid}")
+    cmd_params += env_params
+
+    cmd_params += mounts
 
     if params:
         cmd_params.append(*params)
-    cmd_params.append(f"{image_name}:latest {f'{cmd}' if cmd else 'bash'}")
+    cmd_params.append(f"{image_name}:latest")
+    cmd_params.append(f"{f'{cmd}' if cmd else 'bash'}")
 
     command = " ".join(cmd_params)
 
@@ -310,24 +457,24 @@ def shell(
 
 
 @task(
-    pre=[check_platform, check_base_image],
+    pre=[check_platform, check_base_image, check_prerequisites],
     optional=["config", "workdir", "force"],
     help={
-        "config": "Name of the config file to use (default 'default.conf').",
-        "workdir": f"Working directory to mount in the container (default '{ROOT_DIR}').",
+        "config": f"Name of the config file to use (default '{DEFAULT_CONF}').",
+        "workdir": f"Working directory to mount in the container (default '{PROJECT_ROOT}').",
         "force": "Force image and container image rebuild (default 'False').",
     },
 )
 def build(
     ctx: "Context",
-    config: str = "default.conf",
-    workdir: str = ROOT_DIR,
+    config: str = DEFAULT_CONF,
+    workdir: str = PROJECT_ROOT,
     force: Optional[bool] = False,
 ):
     """
     Build the OpenWRT image.
     """
-    conf = get_target_config(os.path.join(ROOT_DIR, config))
+    conf = get_target_config(join_path(PROJECT_ROOT, config))
 
     log.info(
         f"Target configuration: \n"
@@ -338,23 +485,24 @@ def build(
     )
 
     # Build image if needed
-    build_container(ctx, base=False, config=config, force=force)
+    imagebuilder(ctx, config=config, force=force)
 
-    # Create output directory if not exists, overlay is optional
-    ensure_dirs(workdir, ["output"])
-    overlay_dir = os.path.join(workdir, "overlay")
-    overlay_exists = os.path.exists(overlay_dir)
+    # Check required directories, overlay is optional
+    check_dirs(root_path=workdir)
 
-    # Build the image
+    # Generate command
     command = (
-        f"make -C '{CONTAINER_WORKDIR_IMAGEBUILDER}' image "
+        f"make -C '{IMAGEBUILDER_WORKDIR}' image "
         f"PROFILE='{conf.profile}' "
         f"PACKAGES='{' '.join(conf.packages)}' "
         f"DISABLED_SERVICES='{' '.join(conf.disabled_services)}' "
-        f"BIN_DIR='{to_container_path('output')}' "
-        f"{f"FILES='{to_container_path('overlay')}' " if overlay_exists else ''}"
+        f"BIN_DIR='{target_path('output')}' "
     )
 
+    if os.path.exists(OVERLAY_DIR):
+        command += f"FILES='{target_path('overlay')}'"
+
+    # Build the image
     log.info(f"Build command: {command}")
     shell(ctx, config=config, cmd=command, workdir=workdir)
 
@@ -363,17 +511,17 @@ def build(
     pre=[check_platform],
     optional=["config"],
     help={
-        "config": "Name of the config file to use (default 'default.conf').",
+        "config": f"Name of the config file to use (default '{DEFAULT_CONF}').",
     },
 )
 def info(
     ctx: "Context",
-    config: str = "default.conf",
+    config: str = DEFAULT_CONF,
 ):
     """
     Show imagebuilder info.
     """
-    command = f"make -C {CONTAINER_WORKDIR_IMAGEBUILDER} info"
+    command = f"make -C {IMAGEBUILDER_WORKDIR} info"
     log.info(f"Shell command: {command}")
     shell(ctx, config=config, cmd=command)
 
@@ -382,23 +530,33 @@ def info(
     pre=[check_platform],
     optional=["config"],
     help={
-        "config": "Name of the config file to use (default 'default.conf').",
+        "config": f"Name of the config file to use (default '{DEFAULT_CONF}').",
     },
 )
 def clean(
     ctx: "Context",
-    config: str = "default.conf",
+    config: str = DEFAULT_CONF,
 ):
     """
     Clean OpenWRT build.
     """
-    command = f"make -C {CONTAINER_WORKDIR_IMAGEBUILDER} clean"
+    command = f"make -C {IMAGEBUILDER_WORKDIR} clean"
     log.info(f"Shell command: {command}")
     shell(ctx, config=config, cmd=command)
 
 
 # Add all tasks to the namespace
-ns = Collection(check_platform, build_container, shell, build, info, clean)
+ns = Collection(
+    check_platform,
+    check_prerequisites,
+    check_base_image,
+    baseimage,
+    imagebuilder,
+    shell,
+    build,
+    info,
+    clean,
+)
 # Configure every task to act as a shell command
 #   (will print colors, allow interactive CLI)
 # Add our extra configuration file for the project
