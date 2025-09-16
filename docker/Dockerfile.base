@@ -87,7 +87,8 @@ RUN <<EOF
       bash curl file \
       git git-lfs gnupg2 \
       jq nano rsync \
-      wget tar zstd bzip2
+      wget tar zstd \
+      bzip2 gzip
     apt-get clean autoclean -y
     apt-get autoremove -y
     rm -rf /var/lib/apt/lists/*
