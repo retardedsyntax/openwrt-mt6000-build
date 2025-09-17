@@ -5,7 +5,6 @@ import os
 import re
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Optional
-import shlex
 
 import structlog
 from invoke.collection import Collection
@@ -13,8 +12,8 @@ from invoke.exceptions import Exit
 from invoke.tasks import task
 
 from utils import (
-    join_path,
     get_target_config,
+    join_path,
 )
 
 if TYPE_CHECKING:
