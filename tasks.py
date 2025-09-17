@@ -569,7 +569,7 @@ def info(
     Show imagebuilder info.
     """
     command = f"make -C '{IMAGEBUILDER_WORKDIR}' info"
-    log.info(f"Shell command: {command}")
+    # log.info(f"Shell command: {command}")
     shell(ctx, config=config, command=command)
 
 
@@ -590,18 +590,12 @@ def clean(
     Clean OpenWRT build.
     """
     conf = get_target_config(join_path(workdir, config))
-    output_dir = f"output-{conf.profile}"
 
-    cmd = [
-        "make",
-        f"-C '{IMAGEBUILDER_WORKDIR}'",
-        "clean",
-        f"PROFILE='{conf.profile}'",
-        f"BIN_DIR='{join_path(IMAGEBUILDER_WORKDIR_ROOT, output_dir)}'",
-    ]
-    command = " ".join(cmd)
-    log.info(f"Shell command: {command}")
+    command = f"make -C '{IMAGEBUILDER_WORKDIR}' clean"
+    # log.info(f"Shell command: {command}")
     shell(ctx, config=config, command=command)
+
+    ctx.run(f"rm -rf {join_path(workdir, f'output-{conf.profile}')}", pty=True)
 
 
 # Add all tasks to the namespace
