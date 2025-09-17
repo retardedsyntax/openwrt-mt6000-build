@@ -5,9 +5,9 @@
 ## ARGS are env vars that are *only available* during the Docker build.
 ## They can be modified at Docker build time via '--build-arg VAR="something"'.
 ARG REGISTRY=docker.io/library
-ARG IMAGE_BASE=ubuntu:22.04
+ARG BASE_IMAGE=ubuntu:22.04
 
-FROM ${REGISTRY}/${IMAGE_BASE} AS base
+FROM ${REGISTRY}/${BASE_IMAGE} AS base
 
 ## Set Bash as the default shell.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -18,13 +18,13 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ## 1) By default, APT tries to use IPv6 also which usually
 ##    causes issues in Docker, so force APT to always use IPv4.
 ## 2) Don't install recommended/suggested packages.
-RUN <<EOF cat > /etc/apt/apt.conf.d/99force-ipv4
+RUN <<EOF1 cat > /etc/apt/apt.conf.d/99force-ipv4 \
+  && <<EOF2 cat > /etc/apt/apt.conf.d/99no-recommends
 Acquire::ForceIPv4 "true";
-EOF
-RUN <<EOF cat > /etc/apt/apt.conf.d/99no-recommends
+EOF1
 APT::Install-Recommends "0";
 APT::Install-Suggests "0";
-EOF
+EOF2
 
 ## APT is running in a script/noninteractive environment.
 ## We want this to be set only during build, not in the
@@ -40,8 +40,10 @@ RUN <<EOF
     set -ex
     apt-get update -y
     apt-get install -y \
-      apt-transport-https ca-certificates \
-      software-properties-common debconf-utils
+      apt-transport-https \
+      ca-certificates \
+      software-properties-common \
+      debconf-utils
     apt-get upgrade -y
 EOF
 
@@ -73,83 +75,43 @@ EOF
 RUN <<EOF
     set -ex
     apt-get install -y \
-      locales language-pack-en \
-      keyboard-configuration console-setup \
+      locales \
+      language-pack-en \
+      keyboard-configuration \
+      console-setup \
       tzdata
     localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
 EOF
 
 ## Step 4.
-## Install basic packages and tools, and do cleanup.
+## Install basic packages and tools.
 RUN <<EOF
     set -ex
     apt-get install -y \
-      bash curl file \
-      git git-lfs gnupg2 \
-      jq nano rsync \
-      wget tar zstd \
-      bzip2 gzip
-    apt-get clean autoclean -y
+      bash \
+      bzip2 \
+      curl \
+      file \
+      gawk \
+      git \
+      git-lfs \
+      gnupg2 \
+      gzip \
+      jq \
+      make \
+      nano \
+      rsync \
+      tar \
+      wget \
+      zstd
+EOF
+
+## Step 5.
+## Cleanup APT.
+RUN <<EOF
+    set -ex
+    apt-get clean -y
+    apt-get autoclean -y
     apt-get autoremove -y
     rm -rf /var/lib/apt/lists/*
 EOF
-
-
-#FROM base as builder_base
-#
-### Step 2. Prepare builder image.
-#ARG DEBIAN_FRONTEND=noninteractive
-#
-#RUN apt-get update -y && \
-#    apt-get install -y --no-install-recommends \
-#      asciidoc \
-#      bash \
-#      binutils \
-#      bison \
-#      build-essential \
-#      bzip2 \
-#      ccache \
-#      flex \
-#      g++ \
-#      g++-multilib \
-#      gawk \
-#      gcc \
-#      gcc-multilib \
-#      genisoimage \
-#      gettext \
-#      gzip \
-#      help2man \ 
-#      intltool \
-#      libdw-dev \
-#      libelf-dev \
-#      libncurses5-dev \
-#      libncursesw5-dev \
-#      libssl-dev \
-#      patch \
-#      perl-modules \ 
-#      pv \
-#      pwgen \
-#      python-is-python3 \
-#      python3 \
-#      python3-cryptography \
-#      python3-dev \
-#      python3-pip \
-#      python3-pyelftools \
-#      python3-setuptools \
-#      python3-venv \
-#      qemu-utils \
-#      signify-openbsd \
-#      subversion \
-#      swig \
-#      tar \
-#      unzip \
-#      xsltproc \
-#      xxd \
-#      zlib1g-dev \
-#      zstd \
-#    && apt-get clean autoclean -y \
-#    && apt-get autoremove -y \
-#    && rm -rf /var/lib/apt/lists/*
-#
-#ENV GCC_COLORS='error=01;31:warning=01;35:note=01;36:caret=01;32:locus=01:quote=01'
-

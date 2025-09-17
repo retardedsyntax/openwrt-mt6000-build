@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+from pydoc import plain
 import re
 
 import attrs
@@ -16,11 +17,19 @@ REQUIRED_CONFIG_KEYS = [
 ]
 
 
-# def _subprocess_run_stdout(command: str) -> Optional[str]:
-#    result = subprocess.run(command, shell=True, capture_output=True)
-#    if result.returncode != 0:
-#        return None
-#    return result.stdout.decode().rstrip()
+def join_path(path1: str, path2: str) -> str:
+    return os.path.join(path1, path2)
+
+
+def strip_whitespace(value: str) -> str:
+    # First, remove leading and trailing whitespace.
+    value = value.strip()
+
+    # Then, replace multiple whitespaces within the string
+    # with a single whitespace.
+    value = re.sub(r"\s\s+", " ", value)
+
+    return value
 
 
 @attrs.define(frozen=True)
@@ -54,19 +63,8 @@ class TargetConfig:
         )
         return url
 
-    def image_name(self, basename: str = "openwrt-imagebuilder") -> str:
-        return f"{basename}-{self.release_str}-{self.target}-{self.subtarget}"
-
-
-def strip_whitespace(value: str) -> str:
-    # First, remove leading and trailing whitespace.
-    value = value.strip()
-
-    # Then, replace multiple whitespaces within the string
-    # with a single whitespace.
-    value = re.sub(r"\s\s+", " ", value)
-
-    return value
+    def image_name(self, basename: str = "imagebuilder") -> str:
+        return f"openwrt/{basename}-{self.release_str}-{self.target}-{self.subtarget}"
 
 
 # Handle possible multiline strings which continue with '\' (Bash-style).
@@ -166,6 +164,12 @@ def get_target_config(config_path: str) -> TargetConfig:
     )
 
 
+# def _subprocess_run_stdout(command: str) -> Optional[str]:
+#    result = subprocess.run(command, shell=True, capture_output=True)
+#    if result.returncode != 0:
+#        return None
+#    return result.stdout.decode().rstrip()
+#
 # def timedelta_to_dhms(td: timedelta) -> tuple[int, int, int, float]:
 #    """
 #    Convert `datetime.timedelta` to days, hours, minutes and seconds.
